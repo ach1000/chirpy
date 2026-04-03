@@ -50,14 +50,5 @@ When handler logic is added:
 2. Rebuild with `go build -o out`
 3. Restart the server with `./out`
 
-Remember to update the Boot.dev CLI tests when implementing new functionality.
-
-## Boot.dev CLI Testing
-Run tests in a separate terminal while the server is running:
-```bash
-# In another terminal window
-bootdev test  # or the appropriate Boot.dev CLI command
-```
-
 ---
 **Note**: Update this file whenever significant changes are made to the server implementation.
