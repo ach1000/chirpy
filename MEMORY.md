@@ -11,8 +11,9 @@ The server is implemented in `chirpy.go` with two main components:
 1. **makeHandler()** function: Creates and returns the HTTP handler
    - Creates an http.ServeMux (request multiplexer/router)
    - Registers handlers in this order:
+     - `/healthz` path: Readiness endpoint that returns 200 OK with "OK" message
      - `/assets/` path: Serves files from the `assets/` directory using `http.StripPrefix` and `http.FileServer`
-     - `/` root path: Serves files from the current directory (`.`) using `http.FileServer`
+     - `/app/` path: Serves files from the current directory (`.`) using `http.StripPrefix` and `http.FileServer`
    - Returns the configured handler (testable and reusable)
 
 2. **main()** function: Sets up and starts the server
@@ -21,8 +22,21 @@ The server is implemented in `chirpy.go` with two main components:
      - `Addr`: Set to ":8080" to bind on all interfaces on port 8080
    - Calls `ListenAndServe()` to start the HTTP server
 
+3. **readinessHandler()** function: Handles health check requests
+   - Sets Content-Type header to "text/plain; charset=utf-8"
+   - Writes HTTP 200 OK status code
+   - Writes response body "OK"
+   - Used for checking if the server is ready to receive traffic
+
 ### FileServer Behavior
-The server uses multiple `http.FileServer` handlers for different paths:
+The server uses multiple handlers for different paths:
+
+**Readiness Handler** (`/healthz`):
+- Health check endpoint for external systems
+- Returns HTTP 200 OK status code
+- Content-Type: `text/plain; charset=utf-8`
+- Response body: `OK`
+- Can be enhanced later to return 503 Service Unavailable if server is not ready
 
 **Assets Handler** (`/assets/`):
 - Serves files from the `assets/` directory
@@ -30,9 +44,11 @@ The server uses multiple `http.FileServer` handlers for different paths:
 - Example: Request to `/assets/logo.png` serves `assets/logo.png`
 - Returns appropriate Content-Type for served files (e.g., `image/png`)
 
-**Root Handler** (`/`):
+**App Handler** (`/app/`):
 - Serves files from the current directory (`.`)
-- Automatically serves `index.html` when accessing the root path `/`
+- Uses `http.StripPrefix` to remove `/app/` prefix from request path
+- Automatically serves `index.html` when accessing `/app/`
+- Example: Request to `/app/index.html` serves `index.html`
 - Returns appropriate HTTP status codes and Content-Type headers
 - Supports directory listing and file downloads
 
@@ -51,8 +67,8 @@ The server will start listening on `http://localhost:8080` (and all interfaces).
 ## Testing
 Unit tests are provided in `chirpy_test.go`:
 
-- **TestServeIndexHTML**: Tests that the handler serves `index.html` correctly
-  - Verifies the server returns a 200 status code
+- **TestServeIndexHTML**: Tests that the handler serves `index.html` from `/app/` path correctly
+  - Verifies the server returns a 200 status code for `/app/index.html`
   - Confirms the response contains "Welcome to Chirpy"
   - Uses the actual `makeHandler()` function from the production code
 
@@ -61,27 +77,36 @@ Unit tests are provided in `chirpy_test.go`:
   - Confirms the Content-Type header indicates an image
   - Verifies the response body contains image file content
 
+- **TestReadinessEndpoint**: Tests the readiness health check endpoint
+  - Verifies the server returns a 200 status code for `/healthz`
+  - Confirms the Content-Type header is `text/plain; charset=utf-8`
+  - Verifies the response body contains exactly "OK"
+
 Run tests with:
 ```bash
 go test -v
 ```
 
 ### Manual Testing
-- **Root Path (`/`)**: Automatically serves `index.html` with a 200 status code
-- **Assets Path (`/assets/`)**: Serves files from the `assets/` directory
+- **Health Check** (`/healthz`): Returns 200 OK with "OK" message
+- **App Path** (`/app/`): Serves index.html and other files from the current directory
+- **Assets Path** (`/assets/`)**: Serves files from the `assets/` directory
 - **Logo**: Access at `http://localhost:8080/assets/logo.png`
 
 Example:
 ```bash
-curl http://localhost:8080/
+curl http://localhost:8080/healthz
+curl http://localhost:8080/app/index.html
 curl http://localhost:8080/assets/logo.png
 ```
 
 ## Key Design Decisions
 - **Testable Handler**: The `makeHandler()` function is extracted to allow unit testing of the handler logic without starting a full server
-- **Explicit Path Routing**: Specific paths (`/assets/`) are registered before catch-all paths (`/`) to ensure correct routing priority
+- **Health Check Endpoint**: A dedicated `/healthz` readiness endpoint allows external systems (load balancers, orchestration systems) to monitor server health
+- **Explicit Path Routing**: Specific paths (`/healthz`, `/assets/`, `/app/`) ensure no conflicts and clear separation of concerns
 - **Asset Directory Structure**: Assets are organized in a dedicated `assets/` directory, separated from root-level files
-- **http.StripPrefix**: Uses `http.StripPrefix` to cleanly map URL paths to filesystem directories (e.g., `/assets/logo.png` → `assets/logo.png`)
+- **Application Server Path**: The fileserver is now under `/app/` instead of `/` to avoid conflicts with the health check endpoint and future API endpoints
+- **http.StripPrefix**: Uses `http.StripPrefix` to cleanly map URL paths to filesystem directories (e.g., `/app/index.html` → `index.html`, `/assets/logo.png` → `assets/logo.png`)
 - **All Interfaces**: Using `:8080` instead of `localhost:8080` to bind on all interfaces, allowing testing from different machines
 - **FileServer Handler**: Uses Go's standard `http.FileServer` to serve static files without custom route logic
 - **Standard Library Only**: Uses only Go's `net/http` package (no external dependencies)

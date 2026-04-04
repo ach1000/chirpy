@@ -12,8 +12,8 @@ func TestServeIndexHTML(t *testing.T) {
 	server := httptest.NewServer(makeHandler())
 	defer server.Close()
 
-	// Make a request to the root path
-	resp, err := http.Get(server.URL + "/index.html")
+	// Make a request to the /app path
+	resp, err := http.Get(server.URL + "/app/index.html")
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
@@ -71,5 +71,42 @@ func TestServeLogo(t *testing.T) {
 	// Check that the response body is not empty (image file has content)
 	if n == 0 {
 		t.Errorf("Response body is empty, expected image file content")
+	}
+}
+
+func TestReadinessEndpoint(t *testing.T) {
+	// Create a test server using the actual handler from chirpy.go
+	server := httptest.NewServer(makeHandler())
+	defer server.Close()
+
+	// Make a request to the readiness endpoint
+	resp, err := http.Get(server.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Check that the status code is 200 OK
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	// Check that the Content-Type header is correct
+	contentType := resp.Header.Get("Content-Type")
+	if contentType != "text/plain; charset=utf-8" {
+		t.Errorf("Expected Content-Type 'text/plain; charset=utf-8', got '%s'", contentType)
+	}
+
+	// Read the response body
+	buf := make([]byte, 1024)
+	n, err := resp.Body.Read(buf)
+	if err != nil && err.Error() != "EOF" {
+		t.Fatalf("Failed to read response body: %v", err)
+	}
+	body := string(buf[:n])
+
+	// Check that the response body contains "OK"
+	if body != "OK" {
+		t.Errorf("Expected body 'OK', got '%s'", body)
 	}
 }
