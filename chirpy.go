@@ -9,6 +9,9 @@ func makeHandler() http.Handler {
 	// Create a new http.ServeMux
 	mux := http.NewServeMux()
 
+	// Register a file server handler for the assets directory
+	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir("assets"))))
+
 	// Register a file server handler for the root path
 	mux.Handle("/", http.FileServer(http.Dir(".")))
 

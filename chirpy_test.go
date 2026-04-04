@@ -37,3 +37,39 @@ func TestServeIndexHTML(t *testing.T) {
 		t.Errorf("Response does not contain expected content. Got: %s", body)
 	}
 }
+
+func TestServeLogo(t *testing.T) {
+	// Create a test server using the actual handler from chirpy.go
+	server := httptest.NewServer(makeHandler())
+	defer server.Close()
+
+	// Make a request to the logo asset
+	resp, err := http.Get(server.URL + "/assets/logo.png")
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Check that the status code is 200 OK
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	// Check that the Content-Type is correct for PNG
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.Contains(contentType, "image") {
+		t.Errorf("Expected image Content-Type, got %s", contentType)
+	}
+
+	// Read the response body to verify it has content
+	buf := make([]byte, 1024)
+	n, err := resp.Body.Read(buf)
+	if err != nil && err.Error() != "EOF" {
+		t.Fatalf("Failed to read response body: %v", err)
+	}
+
+	// Check that the response body is not empty (image file has content)
+	if n == 0 {
+		t.Errorf("Response body is empty, expected image file content")
+	}
+}
