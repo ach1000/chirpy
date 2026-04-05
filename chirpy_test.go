@@ -74,6 +74,70 @@ func TestServeLogo(t *testing.T) {
 	}
 }
 
+// noRedirectClient returns an HTTP client that does not follow redirects,
+// preventing the FileServer's index.html redirect from inflating hit counts.
+func noRedirectClient() *http.Client {
+	return &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	server := httptest.NewServer(makeHandler())
+	defer server.Close()
+
+	client := noRedirectClient()
+
+	// Hit /app/ to increment the counter
+	client.Get(server.URL + "/app/index.html")
+	client.Get(server.URL + "/app/index.html")
+
+	resp, err := client.Get(server.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	buf := make([]byte, 1024)
+	n, _ := resp.Body.Read(buf)
+	body := string(buf[:n])
+
+	if body != "Hits: 2" {
+		t.Errorf("Expected body 'Hits: 2', got '%s'", body)
+	}
+}
+
+func TestResetEndpoint(t *testing.T) {
+	server := httptest.NewServer(makeHandler())
+	defer server.Close()
+
+	client := noRedirectClient()
+
+	// Hit /app/ to increment the counter, then reset
+	client.Get(server.URL + "/app/index.html")
+	client.Get(server.URL + "/reset")
+
+	resp, err := client.Get(server.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	buf := make([]byte, 1024)
+	n, _ := resp.Body.Read(buf)
+	body := string(buf[:n])
+
+	if body != "Hits: 0" {
+		t.Errorf("Expected body 'Hits: 0' after reset, got '%s'", body)
+	}
+}
+
 func TestReadinessEndpoint(t *testing.T) {
 	// Create a test server using the actual handler from chirpy.go
 	server := httptest.NewServer(makeHandler())
