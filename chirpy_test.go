@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -108,5 +109,109 @@ func TestReadinessEndpoint(t *testing.T) {
 	// Check that the response body contains "OK"
 	if body != "OK" {
 		t.Errorf("Expected body 'OK', got '%s'", body)
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	server := httptest.NewServer(makeHandler())
+	defer server.Close()
+
+	// Hit /app/ twice to increment the counter
+	for i := 0; i < 2; i++ {
+		resp, err := http.Get(server.URL + "/app/")
+		if err != nil {
+			t.Fatalf("Failed to make request to /app/: %v", err)
+		}
+		resp.Body.Close()
+	}
+
+	// Check /metrics reports the correct count
+	resp, err := http.Get(server.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("Failed to make request to /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if contentType != "text/plain; charset=utf-8" {
+		t.Errorf("Expected Content-Type 'text/plain; charset=utf-8', got '%s'", contentType)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response body: %v", err)
+	}
+
+	if string(body) != "Hits: 2" {
+		t.Errorf("Expected body 'Hits: 2', got '%s'", string(body))
+	}
+}
+
+func TestResetEndpoint(t *testing.T) {
+	server := httptest.NewServer(makeHandler())
+	defer server.Close()
+
+	// Increment counter by hitting /app/
+	resp, err := http.Get(server.URL + "/app/")
+	if err != nil {
+		t.Fatalf("Failed to make request to /app/: %v", err)
+	}
+	resp.Body.Close()
+
+	// Reset the counter
+	resp, err = http.Get(server.URL + "/reset")
+	if err != nil {
+		t.Fatalf("Failed to make request to /reset: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200 from /reset, got %d", resp.StatusCode)
+	}
+
+	// Verify counter is back to 0
+	resp, err = http.Get(server.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("Failed to make request to /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response body: %v", err)
+	}
+
+	if string(body) != "Hits: 0" {
+		t.Errorf("Expected body 'Hits: 0' after reset, got '%s'", string(body))
+	}
+}
+
+func TestMiddlewareMetricsInc(t *testing.T) {
+	cfg := &apiConfig{}
+
+	// Create a simple handler that always returns 200
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := cfg.middlewareMetricsInc(next)
+
+	// Fire three requests through the middleware
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/app/", nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Errorf("request %d: expected status 200, got %d", i+1, rr.Code)
+		}
+	}
+
+	if got := cfg.fileserverHits.Load(); got != 3 {
+		t.Errorf("Expected fileserverHits to be 3, got %d", got)
 	}
 }

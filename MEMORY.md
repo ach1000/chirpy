@@ -6,30 +6,51 @@ This is a simple Go HTTP fileserver that binds to all interfaces on port 8080 an
 ## Architecture
 
 ### Current Implementation
-The server is implemented in `chirpy.go` with two main components:
+The server is implemented in `chirpy.go` with the following components:
 
-1. **makeHandler()** function: Creates and returns the HTTP handler
+1. **apiConfig** struct: Holds in-memory server state
+   - `fileserverHits atomic.Int32`: Thread-safe counter of `/app/` requests served
+
+2. **makeHandler()** function: Creates and returns the HTTP handler
+   - Instantiates `apiConfig`
    - Creates an http.ServeMux (request multiplexer/router)
    - Registers handlers in this order:
      - `/healthz` path: Readiness endpoint that returns 200 OK with "OK" message
+     - `/metrics` path: Returns hit count as `Hits: x` plain text
+     - `/reset` path: Resets `fileserverHits` to 0
      - `/assets/` path: Serves files from the `assets/` directory using `http.StripPrefix` and `http.FileServer`
-     - `/app/` path: Serves files from the current directory (`.`) using `http.StripPrefix` and `http.FileServer`
+     - `/app/` path: Serves files from the current directory (`.`) wrapped with `middlewareMetricsInc`
    - Returns the configured handler (testable and reusable)
 
-2. **main()** function: Sets up and starts the server
+3. **main()** function: Sets up and starts the server
    - Creates an http.Server struct configured with:
      - `Handler`: Set to the result of `makeHandler()`
      - `Addr`: Set to ":8080" to bind on all interfaces on port 8080
    - Calls `ListenAndServe()` to start the HTTP server
 
-3. **readinessHandler()** function: Handles health check requests
+4. **readinessHandler()** function: Handles health check requests
    - Sets Content-Type header to "text/plain; charset=utf-8"
    - Writes HTTP 200 OK status code
    - Writes response body "OK"
    - Used for checking if the server is ready to receive traffic
 
+5. **middlewareMetricsInc()** method on `*apiConfig`: Middleware that increments `fileserverHits` on each request before passing to the next handler
+
+6. **metricsHandler()** method on `*apiConfig`: Returns `Hits: x` as plain text
+
+7. **resetHandler()** method on `*apiConfig`: Resets `fileserverHits` to 0
+
 ### FileServer Behavior
 The server uses multiple handlers for different paths:
+
+**Metrics Handler** (`/metrics`):
+- Returns the number of `/app/` requests served since server start
+- Content-Type: `text/plain; charset=utf-8`
+- Response body format: `Hits: x`
+
+**Reset Handler** (`/reset`):
+- Resets `fileserverHits` counter to 0
+- Returns HTTP 200 OK with no body content
 
 **Readiness Handler** (`/healthz`):
 - Health check endpoint for external systems
@@ -88,6 +109,8 @@ go test -v
 ```
 
 ### Manual Testing
+- **Metrics** (`/metrics`): Returns hit count as `Hits: x`
+- **Reset** (`/reset`): Resets hit counter to 0
 - **Health Check** (`/healthz`): Returns 200 OK with "OK" message
 - **App Path** (`/app/`): Serves index.html and other files from the current directory
 - **Assets Path** (`/assets/`)**: Serves files from the `assets/` directory
