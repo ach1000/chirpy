@@ -163,7 +163,7 @@ func TestResetEndpoint(t *testing.T) {
 	resp.Body.Close()
 
 	// Reset the counter
-	resp, err = http.Get(server.URL + "/reset")
+	resp, err = http.Post(server.URL+"/reset", "", nil)
 	if err != nil {
 		t.Fatalf("Failed to make request to /reset: %v", err)
 	}
@@ -187,6 +187,35 @@ func TestResetEndpoint(t *testing.T) {
 
 	if string(body) != "Hits: 0" {
 		t.Errorf("Expected body 'Hits: 0' after reset, got '%s'", string(body))
+	}
+}
+
+func TestMethodNotAllowed(t *testing.T) {
+	server := httptest.NewServer(makeHandler())
+	defer server.Close()
+
+	tests := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/healthz"},
+		{http.MethodPost, "/metrics"},
+		{http.MethodGet, "/reset"},
+	}
+
+	for _, tc := range tests {
+		req, err := http.NewRequest(tc.method, server.URL+tc.path, nil)
+		if err != nil {
+			t.Fatalf("%s %s: failed to create request: %v", tc.method, tc.path, err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: failed to make request: %v", tc.method, tc.path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("%s %s: expected 405, got %d", tc.method, tc.path, resp.StatusCode)
+		}
 	}
 }
 

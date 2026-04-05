@@ -15,9 +15,9 @@ The server is implemented in `chirpy.go` with the following components:
    - Instantiates `apiConfig`
    - Creates an http.ServeMux (request multiplexer/router)
    - Registers handlers in this order:
-     - `/healthz` path: Readiness endpoint that returns 200 OK with "OK" message
-     - `/metrics` path: Returns hit count as `Hits: x` plain text
-     - `/reset` path: Resets `fileserverHits` to 0
+     - `GET /healthz` path: Readiness endpoint that returns 200 OK with "OK" message
+     - `GET /metrics` path: Returns hit count as `Hits: x` plain text
+     - `POST /reset` path: Resets `fileserverHits` to 0
      - `/assets/` path: Serves files from the `assets/` directory using `http.StripPrefix` and `http.FileServer`
      - `/app/` path: Serves files from the current directory (`.`) wrapped with `middlewareMetricsInc`
    - Returns the configured handler (testable and reusable)

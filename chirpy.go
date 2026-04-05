@@ -49,13 +49,13 @@ func makeHandler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Register the readiness endpoint
-	mux.HandleFunc("/healthz", readinessHandler)
+	mux.HandleFunc("GET /healthz", readinessHandler)
 
 	// Register the metrics endpoint
-	mux.HandleFunc("/metrics", apiCfg.metricsHandler)
+	mux.HandleFunc("GET /metrics", apiCfg.metricsHandler)
 
 	// Register the reset endpoint
-	mux.HandleFunc("/reset", apiCfg.resetHandler)
+	mux.HandleFunc("POST /reset", apiCfg.resetHandler)
 
 	// Register a file server handler for the assets directory
 	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir("assets"))))
