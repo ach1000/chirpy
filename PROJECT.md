@@ -8,7 +8,8 @@
 ## Current Server Behavior
 - Uses net/http with a ServeMux and http.Server
 - Binds to :8080
-- "/" is registered with http.FileServer(http.Dir(".")), serving index.html from the project root
+- "/app/" is registered with http.StripPrefix("/app", http.FileServer(http.Dir("."))), serving index.html from the project root (e.g. /app/ -> index.html)
+- "/healthz" is registered via mux.HandleFunc(handlerReadiness); responds 200 OK, Content-Type: text/plain; charset=utf-8, body "OK", for any HTTP method
 
 ## Commands
 - Build: go build -o out
