@@ -15,10 +15,10 @@ The server is implemented in `chirpy.go` with the following components:
    - Creates an `apiConfig` instance (`apiCfg`)
    - Creates an http.ServeMux (request multiplexer/router)
    - Registers handlers in this order:
-     - `/healthz` path: Readiness endpoint that returns 200 OK with "OK" message
+     - `GET /healthz`: Readiness endpoint that returns 200 OK with "OK" message
      - `/app/` path: Serves files from the current directory (`.`) via `http.StripPrefix` and `http.FileServer`, wrapped in `apiCfg.middlewareMetricsInc`
-     - `/metrics` path: Returns the current hit count as plain text
-     - `/reset` path: Resets the hit count to 0
+     - `GET /metrics`: Returns the current hit count as plain text
+     - `POST /reset`: Resets the hit count to 0
    - Creates an http.Server struct configured with:
      - `Handler`: Set to the mux
      - `Addr`: Set to ":8080"
@@ -29,7 +29,7 @@ The server is implemented in `chirpy.go` with the following components:
    - Writes HTTP 200 OK status code
    - Writes response body "OK"
    - Used for checking if the server is ready to receive traffic
-   - Responds to any HTTP method
+   - Only registered for GET; other methods get an automatic 405
 
 4. **middlewareMetricsInc()** method on `*apiConfig`: wraps an `http.Handler` and increments `fileserverHits` (via `.Add(1)`) on every request before calling the wrapped handler
 
@@ -63,17 +63,17 @@ The server will start listening on `http://localhost:8080`.
 No automated tests exist yet (`chirpy_test.go` not present).
 
 ### Manual Testing
-- **Health Check** (`/healthz`): Returns 200 OK with "OK" message
+- **Health Check** (`GET /healthz`): Returns 200 OK with "OK" message; other methods get 405
 - **App Path** (`/app/`): Serves index.html and other files from the current directory; each hit increments the metrics counter
-- **Metrics** (`/metrics`): Returns `Hits: x` as plain text
-- **Reset** (`/reset`): Resets the hit counter to 0
+- **Metrics** (`GET /metrics`): Returns `Hits: x` as plain text; other methods get 405
+- **Reset** (`POST /reset`): Resets the hit counter to 0; other methods get 405
 
 Example:
 ```bash
 curl http://localhost:8080/healthz
 curl http://localhost:8080/app/
 curl http://localhost:8080/metrics
-curl http://localhost:8080/reset
+curl -X POST http://localhost:8080/reset
 ```
 
 ## Key Design Decisions
@@ -82,6 +82,7 @@ curl http://localhost:8080/reset
 - **http.StripPrefix**: Used to cleanly map the `/app/` URL path to the filesystem root (e.g., `/app/index.html` → `index.html`)
 - **FileServer Handler**: Uses Go's standard `http.FileServer` to serve static files without custom route logic
 - **Standard Library Only**: Uses only Go's `net/http` package (no external dependencies)
+- **Method-Specific Routing**: `/healthz` and `/metrics` are registered as `GET`, and `/reset` as `POST`, using Go 1.22+'s `"METHOD /path"` mux pattern syntax — mismatched methods get an automatic 405 Method Not Allowed
 
 ## Project Structure
 ```
