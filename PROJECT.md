@@ -8,22 +8,34 @@ This is a simple Go HTTP fileserver that binds to port 8080 and serves static fi
 ### Current Implementation
 The server is implemented in `chirpy.go` with the following components:
 
-1. **main()** function: Sets up and starts the server
+1. **apiConfig struct**: Holds in-memory server state
+   - `fileserverHits atomic.Int32`: count of requests served through the `/app/` handler, safe for concurrent access
+
+2. **main()** function: Sets up and starts the server
+   - Creates an `apiConfig` instance (`apiCfg`)
    - Creates an http.ServeMux (request multiplexer/router)
    - Registers handlers in this order:
      - `/healthz` path: Readiness endpoint that returns 200 OK with "OK" message
-     - `/app/` path: Serves files from the current directory (`.`) via `http.StripPrefix` and `http.FileServer`
+     - `/app/` path: Serves files from the current directory (`.`) via `http.StripPrefix` and `http.FileServer`, wrapped in `apiCfg.middlewareMetricsInc`
+     - `/metrics` path: Returns the current hit count as plain text
+     - `/reset` path: Resets the hit count to 0
    - Creates an http.Server struct configured with:
      - `Handler`: Set to the mux
      - `Addr`: Set to ":8080"
    - Calls `ListenAndServe()` to start the HTTP server
 
-2. **handlerReadiness()** function: Handles health check requests
+3. **handlerReadiness()** function: Handles health check requests
    - Sets Content-Type header to "text/plain; charset=utf-8"
    - Writes HTTP 200 OK status code
    - Writes response body "OK"
    - Used for checking if the server is ready to receive traffic
    - Responds to any HTTP method
+
+4. **middlewareMetricsInc()** method on `*apiConfig`: wraps an `http.Handler` and increments `fileserverHits` (via `.Add(1)`) on every request before calling the wrapped handler
+
+5. **handlerMetrics()** method on `*apiConfig`: writes `Hits: x` as plain text, where `x` is the current `fileserverHits` value (via `.Load()`)
+
+6. **handlerReset()** method on `*apiConfig`: resets `fileserverHits` to 0 (via `.Store(0)`) and returns 200 OK
 
 ### FileServer Behavior
 **App Handler** (`/app/`):
@@ -52,12 +64,16 @@ No automated tests exist yet (`chirpy_test.go` not present).
 
 ### Manual Testing
 - **Health Check** (`/healthz`): Returns 200 OK with "OK" message
-- **App Path** (`/app/`): Serves index.html and other files from the current directory
+- **App Path** (`/app/`): Serves index.html and other files from the current directory; each hit increments the metrics counter
+- **Metrics** (`/metrics`): Returns `Hits: x` as plain text
+- **Reset** (`/reset`): Resets the hit counter to 0
 
 Example:
 ```bash
 curl http://localhost:8080/healthz
 curl http://localhost:8080/app/
+curl http://localhost:8080/metrics
+curl http://localhost:8080/reset
 ```
 
 ## Key Design Decisions
@@ -80,10 +96,6 @@ chirpy/
 
 ## Missing Functionality (compared to ../chirpy-old)
 The sibling project `../chirpy-old` has implemented more functionality that this project lacks. To bring this project to parity, still need to add:
-- **apiConfig struct** with `fileserverHits atomic.Int32` to track `/app/` request counts
-- **middlewareMetricsInc**: middleware wrapping the `/app/` handler to increment the hit counter
-- **/metrics** endpoint: returns `Hits: x` as plain text
-- **/reset** endpoint (POST): resets `fileserverHits` to 0
 - **/assets/** path: serves files (e.g. a logo) from an `assets/` directory via `http.StripPrefix` + `http.FileServer`
 - **makeHandler()** extraction: pull mux/handler setup out of `main()` into its own function so it's testable independently of starting a real server
 - **Unit tests** (`chirpy_test.go`) covering the app/index.html handler, the assets handler, and the readiness handler
