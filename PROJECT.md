@@ -17,8 +17,8 @@ The server is implemented in `chirpy.go` with the following components:
    - Registers handlers in this order:
      - `GET /api/healthz`: Readiness endpoint that returns 200 OK with "OK" message
      - `/app/` path: Serves files from the current directory (`.`) via `http.StripPrefix` and `http.FileServer`, wrapped in `apiCfg.middlewareMetricsInc`
-     - `GET /api/metrics`: Returns the current hit count as plain text
-     - `POST /api/reset`: Resets the hit count to 0
+     - `GET /admin/metrics`: Returns the current hit count rendered as HTML
+     - `POST /admin/reset`: Resets the hit count to 0
    - Returns the mux
 
 3. **main()** function: Sets up and starts the server
@@ -36,7 +36,7 @@ The server is implemented in `chirpy.go` with the following components:
 
 5. **middlewareMetricsInc()** method on `*apiConfig`: wraps an `http.Handler` and increments `fileserverHits` (via `.Add(1)`) on every request before calling the wrapped handler
 
-6. **handlerMetrics()** method on `*apiConfig`: writes `Hits: x` as plain text, where `x` is the current `fileserverHits` value (via `.Load()`)
+6. **handlerMetrics()** method on `*apiConfig`: writes an HTML page (Content-Type `text/html; charset=utf-8`) showing "Chirpy has been visited x times!", where `x` is the current `fileserverHits` value (via `.Load()`), built with `fmt.Fprintf` against an HTML template
 
 7. **handlerReset()** method on `*apiConfig`: resets `fileserverHits` to 0 (via `.Store(0)`) and returns 200 OK
 
@@ -69,33 +69,35 @@ The server will start listening on `http://localhost:8080`.
 Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `httptest.NewServer(makeHandler())` to exercise the real mux without binding to the production port:
 - **TestServeIndexHTML**: `GET /app/index.html` returns 200 and contains "Welcome to Chirpy"
 - **TestReadinessEndpoint**: `GET /api/healthz` returns 200, correct Content-Type, and body "OK"
-- **TestMetricsEndpoint**: two hits to `/app/` followed by `GET /api/metrics` reports "Hits: 2"
-- **TestResetEndpoint**: a hit to `/app/` followed by `POST /api/reset` brings `/api/metrics` back to "Hits: 0"
-- **TestMethodNotAllowed**: wrong-method requests to `/api/healthz`, `/api/metrics`, `/api/reset` all return 405
+- **TestMetricsEndpoint**: two hits to `/app/` followed by `GET /admin/metrics` returns HTML containing "Chirpy has been visited 2 times!"
+- **TestResetEndpoint**: a hit to `/app/` followed by `POST /admin/reset` brings `/admin/metrics` back to "Chirpy has been visited 0 times!"
+- **TestMethodNotAllowed**: wrong-method requests to `/api/healthz`, `/admin/metrics`, `/admin/reset` all return 405
 - **TestMiddlewareMetricsInc**: calls `middlewareMetricsInc` directly against a stub handler and checks `fileserverHits` increments correctly
 
 ### Manual Testing
 - **Health Check** (`GET /api/healthz`): Returns 200 OK with "OK" message; other methods get 405
 - **App Path** (`/app/`): Serves index.html and other files from the current directory; each hit increments the metrics counter
-- **Metrics** (`GET /api/metrics`): Returns `Hits: x` as plain text; other methods get 405
-- **Reset** (`POST /api/reset`): Resets the hit counter to 0; other methods get 405
+- **Metrics** (`GET /admin/metrics`): Returns an HTML page showing the visit count; meant to be viewed in a browser; other methods get 405
+- **Reset** (`POST /admin/reset`): Resets the hit counter to 0; other methods get 405
 
 Example:
 ```bash
 curl http://localhost:8080/api/healthz
 curl http://localhost:8080/app/
-curl http://localhost:8080/api/metrics
-curl -X POST http://localhost:8080/api/reset
+curl http://localhost:8080/admin/metrics
+curl -X POST http://localhost:8080/admin/reset
 ```
 
 ## Key Design Decisions
 - **Health Check Endpoint**: A dedicated `/api/healthz` readiness endpoint allows external systems (load balancers, orchestration systems) to monitor server health
 - **Application Server Path**: The fileserver is under `/app/` instead of `/` to avoid conflicts with the health check endpoint and API endpoints
-- **API Namespace**: All non-fileserver (API) endpoints are served under the `/api` path prefix, keeping API routing decoupled from the website path even though the server is currently a monolith
+- **API Namespace**: Non-fileserver, externally-facing endpoints are served under the `/api` path prefix, keeping API routing decoupled from the website path even though the server is currently a monolith
+- **Admin Namespace**: Endpoints intended for internal/administrative use (`/admin/metrics`, `/admin/reset`) are served under a separate `/admin` path prefix purely for organizational clarity — there is nothing inherently more secure about this namespace
+- **HTML Admin Metrics**: `/admin/metrics` returns a small HTML page (not plain text) so it can be loaded and viewed directly in a browser, with the count updating on refresh as `/app/` is hit
 - **http.StripPrefix**: Used to cleanly map the `/app/` URL path to the filesystem root (e.g., `/app/index.html` → `index.html`)
 - **FileServer Handler**: Uses Go's standard `http.FileServer` to serve static files without custom route logic
 - **Standard Library Only**: Uses only Go's `net/http` package (no external dependencies)
-- **Method-Specific Routing**: `/api/healthz` and `/api/metrics` are registered as `GET`, and `/api/reset` as `POST`, using Go 1.22+'s `"METHOD /path"` mux pattern syntax — mismatched methods get an automatic 405 Method Not Allowed
+- **Method-Specific Routing**: `/api/healthz` and `/admin/metrics` are registered as `GET`, and `/admin/reset` as `POST`, using Go 1.22+'s `"METHOD /path"` mux pattern syntax — mismatched methods get an automatic 405 Method Not Allowed
 - **makeHandler() Extraction**: Mux/handler setup lives in `makeHandler() http.Handler`, separate from `main()`, so it can be exercised in tests via `httptest.NewServer(makeHandler())` without starting a real listener
 
 ## Project Structure

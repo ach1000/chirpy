@@ -73,9 +73,9 @@ func TestMetricsEndpoint(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	resp, err := http.Get(server.URL + "/api/metrics")
+	resp, err := http.Get(server.URL + "/admin/metrics")
 	if err != nil {
-		t.Fatalf("Failed to make request to /metrics: %v", err)
+		t.Fatalf("Failed to make request to /admin/metrics: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -84,8 +84,8 @@ func TestMetricsEndpoint(t *testing.T) {
 	}
 
 	contentType := resp.Header.Get("Content-Type")
-	if contentType != "text/plain; charset=utf-8" {
-		t.Errorf("Expected Content-Type 'text/plain; charset=utf-8', got '%s'", contentType)
+	if contentType != "text/html; charset=utf-8" {
+		t.Errorf("Expected Content-Type 'text/html; charset=utf-8', got '%s'", contentType)
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -93,8 +93,8 @@ func TestMetricsEndpoint(t *testing.T) {
 		t.Fatalf("Failed to read response body: %v", err)
 	}
 
-	if string(body) != "Hits: 2" {
-		t.Errorf("Expected body 'Hits: 2', got '%s'", string(body))
+	if !strings.Contains(string(body), "Chirpy has been visited 2 times!") {
+		t.Errorf("Expected body to contain visit count 2, got: %s", body)
 	}
 }
 
@@ -108,19 +108,19 @@ func TestResetEndpoint(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	resp, err = http.Post(server.URL+"/api/reset", "", nil)
+	resp, err = http.Post(server.URL+"/admin/reset", "", nil)
 	if err != nil {
-		t.Fatalf("Failed to make request to /reset: %v", err)
+		t.Fatalf("Failed to make request to /admin/reset: %v", err)
 	}
 	resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200 from /reset, got %d", resp.StatusCode)
+		t.Errorf("Expected status 200 from /admin/reset, got %d", resp.StatusCode)
 	}
 
-	resp, err = http.Get(server.URL + "/api/metrics")
+	resp, err = http.Get(server.URL + "/admin/metrics")
 	if err != nil {
-		t.Fatalf("Failed to make request to /metrics: %v", err)
+		t.Fatalf("Failed to make request to /admin/metrics: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -129,8 +129,8 @@ func TestResetEndpoint(t *testing.T) {
 		t.Fatalf("Failed to read response body: %v", err)
 	}
 
-	if string(body) != "Hits: 0" {
-		t.Errorf("Expected body 'Hits: 0' after reset, got '%s'", string(body))
+	if !strings.Contains(string(body), "Chirpy has been visited 0 times!") {
+		t.Errorf("Expected body to contain visit count 0 after reset, got: %s", body)
 	}
 }
 
@@ -143,8 +143,8 @@ func TestMethodNotAllowed(t *testing.T) {
 		path   string
 	}{
 		{http.MethodPost, "/api/healthz"},
-		{http.MethodPost, "/api/metrics"},
-		{http.MethodGet, "/api/reset"},
+		{http.MethodPost, "/admin/metrics"},
+		{http.MethodGet, "/admin/reset"},
 	}
 
 	for _, tc := range tests {
