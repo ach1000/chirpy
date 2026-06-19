@@ -19,6 +19,7 @@ The server is implemented in `chirpy.go` with the following components:
      - `/app/` path: Serves files from the current directory (`.`) via `http.StripPrefix` and `http.FileServer`, wrapped in `apiCfg.middlewareMetricsInc`
      - `GET /admin/metrics`: Returns the current hit count rendered as HTML
      - `POST /admin/reset`: Resets the hit count to 0
+     - `POST /api/validate_chirp`: Validates a chirp's JSON body and reports whether it's within the length limit
    - Returns the mux
 
 3. **main()** function: Sets up and starts the server
@@ -39,6 +40,10 @@ The server is implemented in `chirpy.go` with the following components:
 6. **handlerMetrics()** method on `*apiConfig`: writes an HTML page (Content-Type `text/html; charset=utf-8`) showing "Chirpy has been visited x times!", where `x` is the current `fileserverHits` value (via `.Load()`), built with `fmt.Fprintf` against an HTML template
 
 7. **handlerReset()** method on `*apiConfig`: resets `fileserverHits` to 0 (via `.Store(0)`) and returns 200 OK
+
+8. **handlerValidateChirp()** function: decodes a JSON body `{"body": "..."}`, returns 500 with `{"error": "..."}` on decode failure, 400 with `{"error": "Chirp is too long"}` if the body exceeds `maxChirpLength` (140 chars), otherwise 200 with `{"valid": true}`
+
+9. **respondWithJSON() / respondWithError()** helpers: `respondWithJSON` marshals any payload to JSON, sets `Content-Type: application/json`, and writes the status code + body; `respondWithError` wraps it to emit `{"error": msg}`
 
 ### FileServer Behavior
 **App Handler** (`/app/`):
@@ -72,6 +77,7 @@ Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `htt
 - **TestMetricsEndpoint**: two hits to `/app/` followed by `GET /admin/metrics` returns HTML containing "Chirpy has been visited 2 times!"
 - **TestResetEndpoint**: a hit to `/app/` followed by `POST /admin/reset` brings `/admin/metrics` back to "Chirpy has been visited 0 times!"
 - **TestMethodNotAllowed**: wrong-method requests to `/api/healthz`, `/admin/metrics`, `/admin/reset` all return 405
+- **TestValidateChirpEndpoint**: table-driven test against `POST /api/validate_chirp` covering a valid chirp (200, `valid` key), a too-long chirp (400, `error` key), and malformed JSON (500, `error` key)
 - **TestMiddlewareMetricsInc**: calls `middlewareMetricsInc` directly against a stub handler and checks `fileserverHits` increments correctly
 
 ### Manual Testing
@@ -79,6 +85,7 @@ Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `htt
 - **App Path** (`/app/`): Serves index.html and other files from the current directory; each hit increments the metrics counter
 - **Metrics** (`GET /admin/metrics`): Returns an HTML page showing the visit count; meant to be viewed in a browser; other methods get 405
 - **Reset** (`POST /admin/reset`): Resets the hit counter to 0; other methods get 405
+- **Validate Chirp** (`POST /api/validate_chirp`): Accepts JSON `{"body": "..."}`; returns `{"valid":true}` (200) if 140 chars or fewer, `{"error":"Chirp is too long"}` (400) if too long, or `{"error":"..."}` (500) on malformed JSON
 
 Example:
 ```bash
@@ -86,6 +93,7 @@ curl http://localhost:8080/api/healthz
 curl http://localhost:8080/app/
 curl http://localhost:8080/admin/metrics
 curl -X POST http://localhost:8080/admin/reset
+curl -X POST http://localhost:8080/api/validate_chirp -d '{"body":"hello"}'
 ```
 
 ## Key Design Decisions
@@ -97,8 +105,9 @@ curl -X POST http://localhost:8080/admin/reset
 - **http.StripPrefix**: Used to cleanly map the `/app/` URL path to the filesystem root (e.g., `/app/index.html` → `index.html`)
 - **FileServer Handler**: Uses Go's standard `http.FileServer` to serve static files without custom route logic
 - **Standard Library Only**: Uses only Go's `net/http` package (no external dependencies)
-- **Method-Specific Routing**: `/api/healthz` and `/admin/metrics` are registered as `GET`, and `/admin/reset` as `POST`, using Go 1.22+'s `"METHOD /path"` mux pattern syntax — mismatched methods get an automatic 405 Method Not Allowed
+- **Method-Specific Routing**: `/api/healthz` and `/admin/metrics` are registered as `GET`, and `/admin/reset`/`/api/validate_chirp` as `POST`, using Go 1.22+'s `"METHOD /path"` mux pattern syntax — mismatched methods get an automatic 405 Method Not Allowed
 - **makeHandler() Extraction**: Mux/handler setup lives in `makeHandler() http.Handler`, separate from `main()`, so it can be exercised in tests via `httptest.NewServer(makeHandler())` without starting a real listener
+- **JSON Request/Response Helpers**: `respondWithJSON`/`respondWithError` centralize JSON marshalling and header/status-code handling so future JSON endpoints don't repeat that boilerplate
 
 ## Project Structure
 ```

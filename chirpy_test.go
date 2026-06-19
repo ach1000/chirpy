@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -160,6 +162,65 @@ func TestMethodNotAllowed(t *testing.T) {
 		if resp.StatusCode != http.StatusMethodNotAllowed {
 			t.Errorf("%s %s: expected 405, got %d", tc.method, tc.path, resp.StatusCode)
 		}
+	}
+}
+
+func TestValidateChirpEndpoint(t *testing.T) {
+	server := httptest.NewServer(makeHandler())
+	defer server.Close()
+
+	tests := []struct {
+		name         string
+		body         string
+		expectedCode int
+		expectedKey  string
+	}{
+		{
+			name:         "valid chirp",
+			body:         `{"body":"This is an opinion I need to share with the world"}`,
+			expectedCode: http.StatusOK,
+			expectedKey:  "valid",
+		},
+		{
+			name:         "chirp too long",
+			body:         `{"body":"` + strings.Repeat("a", 141) + `"}`,
+			expectedCode: http.StatusBadRequest,
+			expectedKey:  "error",
+		},
+		{
+			name:         "invalid JSON",
+			body:         `{"body":`,
+			expectedCode: http.StatusInternalServerError,
+			expectedKey:  "error",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := http.Post(server.URL+"/api/validate_chirp", "application/json", bytes.NewBufferString(tc.body))
+			if err != nil {
+				t.Fatalf("Failed to make request: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tc.expectedCode {
+				t.Errorf("Expected status %d, got %d", tc.expectedCode, resp.StatusCode)
+			}
+
+			contentType := resp.Header.Get("Content-Type")
+			if contentType != "application/json" {
+				t.Errorf("Expected Content-Type 'application/json', got '%s'", contentType)
+			}
+
+			var result map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				t.Fatalf("Failed to decode response body: %v", err)
+			}
+
+			if _, ok := result[tc.expectedKey]; !ok {
+				t.Errorf("Expected key '%s' in response, got: %v", tc.expectedKey, result)
+			}
+		})
 	}
 }
 
