@@ -36,7 +36,7 @@ func TestReadinessEndpoint(t *testing.T) {
 	server := httptest.NewServer(makeHandler())
 	defer server.Close()
 
-	resp, err := http.Get(server.URL + "/healthz")
+	resp, err := http.Get(server.URL + "/api/healthz")
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestMetricsEndpoint(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	resp, err := http.Get(server.URL + "/metrics")
+	resp, err := http.Get(server.URL + "/api/metrics")
 	if err != nil {
 		t.Fatalf("Failed to make request to /metrics: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestResetEndpoint(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	resp, err = http.Post(server.URL+"/reset", "", nil)
+	resp, err = http.Post(server.URL+"/api/reset", "", nil)
 	if err != nil {
 		t.Fatalf("Failed to make request to /reset: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestResetEndpoint(t *testing.T) {
 		t.Errorf("Expected status 200 from /reset, got %d", resp.StatusCode)
 	}
 
-	resp, err = http.Get(server.URL + "/metrics")
+	resp, err = http.Get(server.URL + "/api/metrics")
 	if err != nil {
 		t.Fatalf("Failed to make request to /metrics: %v", err)
 	}
@@ -142,9 +142,9 @@ func TestMethodNotAllowed(t *testing.T) {
 		method string
 		path   string
 	}{
-		{http.MethodPost, "/healthz"},
-		{http.MethodPost, "/metrics"},
-		{http.MethodGet, "/reset"},
+		{http.MethodPost, "/api/healthz"},
+		{http.MethodPost, "/api/metrics"},
+		{http.MethodGet, "/api/reset"},
 	}
 
 	for _, tc := range tests {
