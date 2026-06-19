@@ -63,7 +63,13 @@ make clean
 The server will start listening on `http://localhost:8080`.
 
 ## Testing
-No automated tests exist yet (`chirpy_test.go` not present).
+Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `httptest.NewServer(makeHandler())` to exercise the real mux without binding to the production port:
+- **TestServeIndexHTML**: `GET /app/index.html` returns 200 and contains "Welcome to Chirpy"
+- **TestReadinessEndpoint**: `GET /healthz` returns 200, correct Content-Type, and body "OK"
+- **TestMetricsEndpoint**: two hits to `/app/` followed by `GET /metrics` reports "Hits: 2"
+- **TestResetEndpoint**: a hit to `/app/` followed by `POST /reset` brings `/metrics` back to "Hits: 0"
+- **TestMethodNotAllowed**: wrong-method requests to `/healthz`, `/metrics`, `/reset` all return 405
+- **TestMiddlewareMetricsInc**: calls `middlewareMetricsInc` directly against a stub handler and checks `fileserverHits` increments correctly
 
 ### Manual Testing
 - **Health Check** (`GET /healthz`): Returns 200 OK with "OK" message; other methods get 405
@@ -91,18 +97,18 @@ curl -X POST http://localhost:8080/reset
 ## Project Structure
 ```
 chirpy/
-├── chirpy.go       # Server implementation (main, makeHandler, handlerReadiness, apiConfig handlers)
-├── go.mod          # Go module definition
-├── index.html      # Static HTML file served at /app/
-├── Makefile        # build/run/clean targets
-├── PROJECT.md       # This documentation file
-└── chirpy          # Compiled binary (not tracked in git)
+├── chirpy.go        # Server implementation (main, makeHandler, handlerReadiness, apiConfig handlers)
+├── chirpy_test.go   # Unit tests for the handlers and middleware
+├── go.mod           # Go module definition
+├── index.html       # Static HTML file served at /app/
+├── Makefile         # build/run/clean targets
+├── PROJECT.md        # This documentation file
+└── chirpy           # Compiled binary (not tracked in git)
 ```
 
 ## Missing Functionality (compared to ../chirpy-old)
 The sibling project `../chirpy-old` has implemented more functionality that this project lacks. To bring this project to parity, still need to add:
-- **/assets/** path: serves files (e.g. a logo) from an `assets/` directory via `http.StripPrefix` + `http.FileServer`
-- **Unit tests** (`chirpy_test.go`) covering the app/index.html handler, the assets handler, and the readiness handler
+- **/assets/** path: serves files (e.g. a logo) from an `assets/` directory via `http.StripPrefix` + `http.FileServer` (and a corresponding `TestServeLogo` test once added)
 
 ## Future Changes
 When adding more static files or modifying the server:
