@@ -101,14 +101,11 @@ chirpy/
 ├── chirpy_test.go   # Unit tests for the handlers and middleware
 ├── go.mod           # Go module definition
 ├── index.html       # Static HTML file served at /app/
+├── assets/          # Static assets (e.g. logo.png), served at /app/assets/ via the same fileserver handler
 ├── Makefile         # build/run/clean targets
 ├── PROJECT.md        # This documentation file
 └── chirpy           # Compiled binary (not tracked in git)
 ```
-
-## Missing Functionality (compared to ../chirpy-old)
-The sibling project `../chirpy-old` has implemented more functionality that this project lacks. To bring this project to parity, still need to add:
-- **/assets/** path: serves files (e.g. a logo) from an `assets/` directory via `http.StripPrefix` + `http.FileServer` (and a corresponding `TestServeLogo` test once added)
 
 ## Future Changes
 When adding more static files or modifying the server:
