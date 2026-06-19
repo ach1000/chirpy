@@ -11,7 +11,7 @@ The server is implemented in `chirpy.go` with the following components:
 1. **apiConfig struct**: Holds in-memory server state
    - `fileserverHits atomic.Int32`: count of requests served through the `/app/` handler, safe for concurrent access
 
-2. **main()** function: Sets up and starts the server
+2. **makeHandler()** function: Builds and returns the configured `http.Handler` (mux), independent of starting a real server
    - Creates an `apiConfig` instance (`apiCfg`)
    - Creates an http.ServeMux (request multiplexer/router)
    - Registers handlers in this order:
@@ -19,23 +19,26 @@ The server is implemented in `chirpy.go` with the following components:
      - `/app/` path: Serves files from the current directory (`.`) via `http.StripPrefix` and `http.FileServer`, wrapped in `apiCfg.middlewareMetricsInc`
      - `GET /metrics`: Returns the current hit count as plain text
      - `POST /reset`: Resets the hit count to 0
+   - Returns the mux
+
+3. **main()** function: Sets up and starts the server
    - Creates an http.Server struct configured with:
-     - `Handler`: Set to the mux
+     - `Handler`: Set to `makeHandler()`
      - `Addr`: Set to ":8080"
    - Calls `ListenAndServe()` to start the HTTP server
 
-3. **handlerReadiness()** function: Handles health check requests
+4. **handlerReadiness()** function: Handles health check requests
    - Sets Content-Type header to "text/plain; charset=utf-8"
    - Writes HTTP 200 OK status code
    - Writes response body "OK"
    - Used for checking if the server is ready to receive traffic
    - Only registered for GET; other methods get an automatic 405
 
-4. **middlewareMetricsInc()** method on `*apiConfig`: wraps an `http.Handler` and increments `fileserverHits` (via `.Add(1)`) on every request before calling the wrapped handler
+5. **middlewareMetricsInc()** method on `*apiConfig`: wraps an `http.Handler` and increments `fileserverHits` (via `.Add(1)`) on every request before calling the wrapped handler
 
-5. **handlerMetrics()** method on `*apiConfig`: writes `Hits: x` as plain text, where `x` is the current `fileserverHits` value (via `.Load()`)
+6. **handlerMetrics()** method on `*apiConfig`: writes `Hits: x` as plain text, where `x` is the current `fileserverHits` value (via `.Load()`)
 
-6. **handlerReset()** method on `*apiConfig`: resets `fileserverHits` to 0 (via `.Store(0)`) and returns 200 OK
+7. **handlerReset()** method on `*apiConfig`: resets `fileserverHits` to 0 (via `.Store(0)`) and returns 200 OK
 
 ### FileServer Behavior
 **App Handler** (`/app/`):
@@ -83,11 +86,12 @@ curl -X POST http://localhost:8080/reset
 - **FileServer Handler**: Uses Go's standard `http.FileServer` to serve static files without custom route logic
 - **Standard Library Only**: Uses only Go's `net/http` package (no external dependencies)
 - **Method-Specific Routing**: `/healthz` and `/metrics` are registered as `GET`, and `/reset` as `POST`, using Go 1.22+'s `"METHOD /path"` mux pattern syntax — mismatched methods get an automatic 405 Method Not Allowed
+- **makeHandler() Extraction**: Mux/handler setup lives in `makeHandler() http.Handler`, separate from `main()`, so it can be exercised in tests via `httptest.NewServer(makeHandler())` without starting a real listener
 
 ## Project Structure
 ```
 chirpy/
-├── chirpy.go       # Server implementation (main + handlerReadiness)
+├── chirpy.go       # Server implementation (main, makeHandler, handlerReadiness, apiConfig handlers)
 ├── go.mod          # Go module definition
 ├── index.html      # Static HTML file served at /app/
 ├── Makefile        # build/run/clean targets
@@ -98,7 +102,6 @@ chirpy/
 ## Missing Functionality (compared to ../chirpy-old)
 The sibling project `../chirpy-old` has implemented more functionality that this project lacks. To bring this project to parity, still need to add:
 - **/assets/** path: serves files (e.g. a logo) from an `assets/` directory via `http.StripPrefix` + `http.FileServer`
-- **makeHandler()** extraction: pull mux/handler setup out of `main()` into its own function so it's testable independently of starting a real server
 - **Unit tests** (`chirpy_test.go`) covering the app/index.html handler, the assets handler, and the readiness handler
 
 ## Future Changes

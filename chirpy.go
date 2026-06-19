@@ -11,7 +11,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 }
 
-func main() {
+func makeHandler() http.Handler {
 	apiCfg := &apiConfig{}
 
 	mux := http.NewServeMux()
@@ -20,9 +20,13 @@ func main() {
 	mux.HandleFunc("GET /metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("POST /reset", apiCfg.handlerReset)
 
+	return mux
+}
+
+func main() {
 	server := &http.Server{
 		Addr:    ":8080",
-		Handler: mux,
+		Handler: makeHandler(),
 	}
 
 	if err := server.ListenAndServe(); err != nil {
