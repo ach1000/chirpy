@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
+	"strings"
 	"sync/atomic"
 )
 
@@ -67,6 +69,24 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 
 const maxChirpLength = 140
 
+var chirpTokenPattern = regexp.MustCompile(`\S+|\s+`)
+
+func cleanChirp(body string) string {
+	profaneWords := map[string]struct{}{
+		"kerfuffle": {},
+		"sharbert":  {},
+		"fornax":    {},
+	}
+
+	return chirpTokenPattern.ReplaceAllStringFunc(body, func(token string) string {
+		if _, isProfane := profaneWords[strings.ToLower(token)]; isProfane {
+			return "****"
+		}
+
+		return token
+	})
+}
+
 func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Body string `json:"body"`
@@ -87,8 +107,8 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondWithJSON(w, http.StatusOK, struct {
-		Valid bool `json:"valid"`
-	}{Valid: true})
+		CleanedBody string `json:"cleaned_body"`
+	}{CleanedBody: cleanChirp(params.Body)})
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {

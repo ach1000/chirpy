@@ -174,12 +174,28 @@ func TestValidateChirpEndpoint(t *testing.T) {
 		body         string
 		expectedCode int
 		expectedKey  string
+		expectedBody string
 	}{
 		{
 			name:         "valid chirp",
 			body:         `{"body":"This is an opinion I need to share with the world"}`,
 			expectedCode: http.StatusOK,
-			expectedKey:  "valid",
+			expectedKey:  "cleaned_body",
+			expectedBody: "This is an opinion I need to share with the world",
+		},
+		{
+			name:         "replaces profane words case insensitively",
+			body:         `{"body":"This kerfuffle and SHARBERT and fornax should change"}`,
+			expectedCode: http.StatusOK,
+			expectedKey:  "cleaned_body",
+			expectedBody: "This **** and **** and **** should change",
+		},
+		{
+			name:         "does not replace punctuated words",
+			body:         `{"body":"Sharbert! stays, but sharbert changes"}`,
+			expectedCode: http.StatusOK,
+			expectedKey:  "cleaned_body",
+			expectedBody: "Sharbert! stays, but **** changes",
 		},
 		{
 			name:         "chirp too long",
@@ -219,6 +235,12 @@ func TestValidateChirpEndpoint(t *testing.T) {
 
 			if _, ok := result[tc.expectedKey]; !ok {
 				t.Errorf("Expected key '%s' in response, got: %v", tc.expectedKey, result)
+			}
+
+			if tc.expectedBody != "" {
+				if got, ok := result[tc.expectedKey].(string); !ok || got != tc.expectedBody {
+					t.Errorf("Expected %s to be %q, got %v", tc.expectedKey, tc.expectedBody, result[tc.expectedKey])
+				}
 			}
 		})
 	}
