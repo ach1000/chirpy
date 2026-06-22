@@ -70,6 +70,26 @@ make clean
 
 The server will start listening on `http://localhost:8080`.
 
+## Database Migrations (Goose)
+- Migration files live in `sql/schema`.
+- Verified Linux Postgres connection string for this project: `postgres://postgres:postgres@localhost:5432/chirpy`.
+- Goose is installed via:
+
+```bash
+go install github.com/pressly/goose/v3/cmd/goose@latest
+```
+
+- If `goose` is not on PATH, use `$(go env GOPATH)/bin/goose`.
+- Verified migration workflow from `sql/schema`:
+
+```bash
+$(go env GOPATH)/bin/goose postgres "postgres://postgres:postgres@localhost:5432/chirpy" up
+$(go env GOPATH)/bin/goose postgres "postgres://postgres:postgres@localhost:5432/chirpy" down
+$(go env GOPATH)/bin/goose postgres "postgres://postgres:postgres@localhost:5432/chirpy" up
+```
+
+- Verified with `psql` that the `users` table exists after the final `up`.
+
 ## Testing
 Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `httptest.NewServer(makeHandler())` to exercise the real mux without binding to the production port:
 - **TestServeIndexHTML**: `GET /app/index.html` returns 200 and contains "Welcome to Chirpy"
@@ -112,6 +132,9 @@ curl -X POST http://localhost:8080/api/validate_chirp -d '{"body":"hello"}'
 ## Project Structure
 ```
 chirpy/
+├── sql/
+│   └── schema/
+│       └── 001_users.sql   # Goose migration: create/drop users table
 ├── chirpy.go        # Server implementation (main, makeHandler, handlerReadiness, apiConfig handlers)
 ├── chirpy_test.go   # Unit tests for the handlers and middleware
 ├── go.mod           # Go module definition
