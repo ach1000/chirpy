@@ -90,6 +90,38 @@ $(go env GOPATH)/bin/goose postgres "postgres://postgres:postgres@localhost:5432
 
 - Verified with `psql` that the `users` table exists after the final `up`.
 
+## SQLC and DB Wiring
+- SQLC config file: `sqlc.yaml` (version 2).
+- SQLC reads schema from `sql/schema` and queries from `sql/queries`.
+- SQLC generated Go package output: `internal/database`.
+- Current query file: `sql/queries/users.sql` with `CreateUser` insert query.
+- SQLC CLI install/verify:
+
+```bash
+go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+sqlc version
+```
+
+- SQLC generation from repo root:
+
+```bash
+sqlc generate
+```
+
+- Environment configuration:
+   - `.env` is used locally and ignored by git.
+   - `DB_URL` includes `?sslmode=disable` for local Postgres.
+- Server DB setup in `chirpy.go`:
+   - Loads `.env` with `godotenv.Load()`.
+   - Reads `DB_URL` from environment.
+   - Opens Postgres with `sql.Open("postgres", dbURL)`.
+   - Creates SQLC queries via `database.New(db)`.
+   - Stores `*database.Queries` on `apiConfig` for handler access.
+- Required Go dependencies added:
+   - `github.com/google/uuid`
+   - `github.com/lib/pq`
+   - `github.com/joho/godotenv`
+
 ## Testing
 Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `httptest.NewServer(makeHandler())` to exercise the real mux without binding to the production port:
 - **TestServeIndexHTML**: `GET /app/index.html` returns 200 and contains "Welcome to Chirpy"

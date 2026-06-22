@@ -1,22 +1,31 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"sync/atomic"
+
+	"github.com/ach1000/chirpy/internal/database"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries      *database.Queries
 }
 
 func makeHandler() http.Handler {
-	apiCfg := &apiConfig{}
+	return makeHandlerWithConfig(&apiConfig{})
+}
 
+func makeHandlerWithConfig(apiCfg *apiConfig) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	mux.HandleFunc("GET /api/healthz", handlerReadiness)
@@ -28,9 +37,31 @@ func makeHandler() http.Handler {
 }
 
 func main() {
+	if err := godotenv.Load(); err != nil {
+		log.Printf("Warning: error loading .env file: %v", err)
+	}
+
+	dbURL := os.Getenv("DB_URL")
+	if dbURL == "" {
+		log.Fatal("DB_URL must be set")
+	}
+
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		log.Fatal(err)
+	}
+
+	dbQueries := database.New(db)
+	apiCfg := &apiConfig{dbQueries: dbQueries}
+
 	server := &http.Server{
 		Addr:    ":8080",
-		Handler: makeHandler(),
+		Handler: makeHandlerWithConfig(apiCfg),
 	}
 
 	if err := server.ListenAndServe(); err != nil {
