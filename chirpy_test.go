@@ -6,8 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/ach1000/chirpy/internal/database"
 )
 
 func TestServeIndexHTML(t *testing.T) {
@@ -267,5 +272,143 @@ func TestMiddlewareMetricsInc(t *testing.T) {
 
 	if got := cfg.fileserverHits.Load(); got != 3 {
 		t.Errorf("Expected fileserverHits to be 3, got %d", got)
+	}
+}
+
+func TestCreateUserEndpoint(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	createdAt := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	userID := "50746277-23c6-4d85-a890-564c0044c2fb"
+	email := "user@example.com"
+
+	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO users (id, created_at, updated_at, email)")).
+		WithArgs(email).
+		WillReturnRows(
+			sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email"}).
+				AddRow(userID, createdAt, createdAt, email),
+		)
+
+	cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+	server := httptest.NewServer(makeHandlerWithConfig(cfg))
+	defer server.Close()
+
+	resp, err := http.Post(server.URL+"/api/users", "application/json", bytes.NewBufferString(`{"email":"user@example.com"}`))
+	if err != nil {
+		t.Fatalf("failed to create user request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d", resp.StatusCode)
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if contentType != "application/json" {
+		t.Fatalf("expected content-type application/json, got %q", contentType)
+	}
+
+	var result struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+		Email     string `json:"email"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if result.ID != userID {
+		t.Errorf("expected id %q, got %q", userID, result.ID)
+	}
+	if result.Email != email {
+		t.Errorf("expected email %q, got %q", email, result.Email)
+	}
+	createdAtParsed, err := time.Parse(time.RFC3339, result.CreatedAt)
+	if err != nil {
+		t.Fatalf("expected created_at to be RFC3339, parse error: %v", err)
+	}
+	updatedAtParsed, err := time.Parse(time.RFC3339, result.UpdatedAt)
+	if err != nil {
+		t.Fatalf("expected updated_at to be RFC3339, parse error: %v", err)
+	}
+	if !createdAtParsed.Equal(createdAt) {
+		t.Errorf("expected created_at %v, got %v", createdAt, createdAtParsed)
+	}
+	if !updatedAtParsed.Equal(createdAt) {
+		t.Errorf("expected updated_at %v, got %v", createdAt, updatedAtParsed)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+func TestCreateUserEndpointInvalidJSON(t *testing.T) {
+	cfg := &apiConfig{platform: "dev"}
+	server := httptest.NewServer(makeHandlerWithConfig(cfg))
+	defer server.Close()
+
+	resp, err := http.Post(server.URL+"/api/users", "application/json", bytes.NewBufferString(`{"email":`))
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected status 500, got %d", resp.StatusCode)
+	}
+}
+
+func TestResetEndpointForbiddenInNonDev(t *testing.T) {
+	cfg := &apiConfig{platform: "prod"}
+	server := httptest.NewServer(makeHandlerWithConfig(cfg))
+	defer server.Close()
+
+	resp, err := http.Post(server.URL+"/admin/reset", "", nil)
+	if err != nil {
+		t.Fatalf("failed to make request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected status 403, got %d", resp.StatusCode)
+	}
+}
+
+func TestResetEndpointDeletesUsersInDev(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM users")).WillReturnResult(sqlmock.NewResult(0, 2))
+
+	cfg := &apiConfig{
+		platform:  "dev",
+		dbQueries: database.New(db),
+	}
+	cfg.fileserverHits.Store(9)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/reset", nil)
+	rr := httptest.NewRecorder()
+
+	cfg.handlerReset(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rr.Code)
+	}
+	if got := cfg.fileserverHits.Load(); got != 0 {
+		t.Fatalf("expected fileserverHits to be reset to 0, got %d", got)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
 	}
 }

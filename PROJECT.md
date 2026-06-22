@@ -95,6 +95,7 @@ $(go env GOPATH)/bin/goose postgres "postgres://postgres:postgres@localhost:5432
 - SQLC reads schema from `sql/schema` and queries from `sql/queries`.
 - SQLC generated Go package output: `internal/database`.
 - Current query file: `sql/queries/users.sql` with `CreateUser` insert query.
+- `sql/queries/users.sql` also includes `DeleteUsers` for admin reset behavior.
 - SQLC CLI install/verify:
 
 ```bash
@@ -114,9 +115,14 @@ sqlc generate
 - Server DB setup in `chirpy.go`:
    - Loads `.env` with `godotenv.Load()`.
    - Reads `DB_URL` from environment.
+   - Reads `PLATFORM` from environment.
    - Opens Postgres with `sql.Open("postgres", dbURL)`.
    - Creates SQLC queries via `database.New(db)`.
    - Stores `*database.Queries` on `apiConfig` for handler access.
+- API additions:
+   - `POST /api/users` creates a user from JSON body `{ "email": "..." }` using SQLC `CreateUser(r.Context(), email)` and returns `201 Created` with user fields.
+   - `POST /admin/reset` is restricted to `PLATFORM=dev`; otherwise returns `403 Forbidden`.
+   - In `dev`, `POST /admin/reset` deletes all users via SQLC `DeleteUsers` and also resets in-memory fileserver metrics.
 - Required Go dependencies added:
    - `github.com/google/uuid`
    - `github.com/lib/pq`
@@ -131,6 +137,8 @@ Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `htt
 - **TestMethodNotAllowed**: wrong-method requests to `/api/healthz`, `/admin/metrics`, `/admin/reset` all return 405
 - **TestValidateChirpEndpoint**: table-driven test against `POST /api/validate_chirp` covering an unchanged valid chirp, profanity replacement with case-insensitive exact-word matching, punctuated-word passthrough, a too-long chirp (400, `error` key), and malformed JSON (500, `error` key)
 - **TestMiddlewareMetricsInc**: calls `middlewareMetricsInc` directly against a stub handler and checks `fileserverHits` increments correctly
+- **TestCreateUserEndpoint**: verifies `POST /api/users` returns 201 with `id`, `created_at`, `updated_at`, and `email` in the expected JSON shape
+- **TestResetEndpointForbiddenInNonDev / TestResetEndpointDeletesUsersInDev**: verify `POST /admin/reset` returns 403 outside `dev`, and in `dev` it executes user deletion plus resets metrics
 
 ### Manual Testing
 - **Health Check** (`GET /api/healthz`): Returns 200 OK with "OK" message; other methods get 405
