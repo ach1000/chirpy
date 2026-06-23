@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -394,6 +395,98 @@ func TestGetChirpsEndpoint(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		if string(body) != "[]" {
 			t.Errorf("expected empty JSON array '[]', got %q", string(body))
+		}
+	})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+func TestGetChirpByIDEndpoint(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	createdAt := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)
+	chirpID := "94b7e44c-3604-42e3-bef7-ebfcc3efff8f"
+	userIDStr := "50746277-23c6-4d85-a890-564c0044c2fb"
+	parsedChirpID := uuid.MustParse(chirpID)
+
+	t.Run("returns chirp for existing id", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, body, user_id")).
+			WithArgs(parsedChirpID).
+			WillReturnRows(
+				sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}).
+					AddRow(chirpID, createdAt, createdAt, "fr? no clowning?", userIDStr),
+			)
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		resp, err := http.Get(server.URL + "/api/chirps/" + chirpID)
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", resp.StatusCode)
+		}
+
+		var result map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if result["id"] != chirpID {
+			t.Errorf("expected id %q, got %v", chirpID, result["id"])
+		}
+		if result["body"] != "fr? no clowning?" {
+			t.Errorf("expected body %q, got %v", "fr? no clowning?", result["body"])
+		}
+		if result["user_id"] != userIDStr {
+			t.Errorf("expected user_id %q, got %v", userIDStr, result["user_id"])
+		}
+	})
+
+	t.Run("returns 404 for missing id", func(t *testing.T) {
+		missingID := "f0f87ec2-a8b5-48cc-b66a-a85ce7c7b862"
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, body, user_id")).
+			WithArgs(uuid.MustParse(missingID)).
+			WillReturnError(sql.ErrNoRows)
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		resp, err := http.Get(server.URL + "/api/chirps/" + missingID)
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected status 404, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("returns 404 for invalid id format", func(t *testing.T) {
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		resp, err := http.Get(server.URL + "/api/chirps/not-a-uuid")
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected status 404, got %d", resp.StatusCode)
 		}
 	})
 
