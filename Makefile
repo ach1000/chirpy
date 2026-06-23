@@ -4,7 +4,7 @@ build:
 	go build -o chirpy
 
 run: build
-	./chirpy
+	timeout 2m ./chirpy
 
 test:
 	go test ./...

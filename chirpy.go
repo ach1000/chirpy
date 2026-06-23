@@ -36,6 +36,7 @@ func makeHandlerWithConfig(apiCfg *apiConfig) http.Handler {
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	mux.HandleFunc("POST /api/users", apiCfg.handlerUsersCreate)
 	mux.HandleFunc("POST /api/chirps", apiCfg.handlerChirpsCreate)
+	mux.HandleFunc("GET /api/chirps", apiCfg.handlerChirpsGet)
 
 	return mux
 }
@@ -226,6 +227,41 @@ func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request
 		Body:      chirp.Body,
 		UserID:    chirp.UserID.String(),
 	})
+}
+
+func (cfg *apiConfig) handlerChirpsGet(w http.ResponseWriter, r *http.Request) {
+	if cfg.dbQueries == nil {
+		respondWithError(w, http.StatusInternalServerError, "Database not configured")
+		return
+	}
+
+	chirps, err := cfg.dbQueries.GetChirps(r.Context())
+	if err != nil {
+		log.Printf("Error getting chirps: %s", err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get chirps")
+		return
+	}
+
+	type chirpResponse struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+		Body      string `json:"body"`
+		UserID    string `json:"user_id"`
+	}
+
+	response := make([]chirpResponse, len(chirps))
+	for i, c := range chirps {
+		response[i] = chirpResponse{
+			ID:        c.ID.String(),
+			CreatedAt: c.CreatedAt.UTC().Format(time.RFC3339),
+			UpdatedAt: c.UpdatedAt.UTC().Format(time.RFC3339),
+			Body:      c.Body,
+			UserID:    c.UserID.String(),
+		}
+	}
+
+	respondWithJSON(w, http.StatusOK, response)
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {

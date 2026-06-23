@@ -310,6 +310,98 @@ func TestCreateChirpEndpoint(t *testing.T) {
 	}
 }
 
+func TestGetChirpsEndpoint(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	t1 := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)
+	t2 := time.Date(2022, 1, 1, 0, 0, 0, 0, time.UTC)
+	chirpID1 := "94b7e44c-3604-42e3-bef7-ebfcc3efff8f"
+	chirpID2 := "f0f87ec2-a8b5-48cc-b66a-a85ce7c7b862"
+	userIDStr := "50746277-23c6-4d85-a890-564c0044c2fb"
+
+	t.Run("returns chirps ordered by created_at asc", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, body, user_id")).
+			WillReturnRows(
+				sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}).
+					AddRow(chirpID1, t1, t1, "First chirp", userIDStr).
+					AddRow(chirpID2, t2, t2, "Second chirp", userIDStr),
+			)
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		resp, err := http.Get(server.URL + "/api/chirps")
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected status 200, got %d", resp.StatusCode)
+		}
+		if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("expected Content-Type application/json, got %q", ct)
+		}
+
+		var result []map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if len(result) != 2 {
+			t.Fatalf("expected 2 chirps, got %d", len(result))
+		}
+		if result[0]["id"] != chirpID1 {
+			t.Errorf("expected first chirp id %q, got %v", chirpID1, result[0]["id"])
+		}
+		if result[1]["id"] != chirpID2 {
+			t.Errorf("expected second chirp id %q, got %v", chirpID2, result[1]["id"])
+		}
+		if result[0]["body"] != "First chirp" {
+			t.Errorf("expected body 'First chirp', got %v", result[0]["body"])
+		}
+		if result[0]["user_id"] != userIDStr {
+			t.Errorf("expected user_id %q, got %v", userIDStr, result[0]["user_id"])
+		}
+		if _, err := time.Parse(time.RFC3339, result[0]["created_at"].(string)); err != nil {
+			t.Errorf("created_at not RFC3339: %v", err)
+		}
+	})
+
+	t.Run("returns empty array when no chirps", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, body, user_id")).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}))
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		resp, err := http.Get(server.URL + "/api/chirps")
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected status 200, got %d", resp.StatusCode)
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		if string(body) != "[]" {
+			t.Errorf("expected empty JSON array '[]', got %q", string(body))
+		}
+	})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
 func TestMiddlewareMetricsInc(t *testing.T) {
 	cfg := &apiConfig{}
 
