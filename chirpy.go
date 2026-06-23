@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ach1000/chirpy/internal/database"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -34,7 +35,7 @@ func makeHandlerWithConfig(apiCfg *apiConfig) http.Handler {
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	mux.HandleFunc("POST /api/users", apiCfg.handlerUsersCreate)
-	mux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
+	mux.HandleFunc("POST /api/chirps", apiCfg.handlerChirpsCreate)
 
 	return mux
 }
@@ -172,15 +173,20 @@ func cleanChirp(body string) string {
 	})
 }
 
-func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request) {
+	if cfg.dbQueries == nil {
+		respondWithError(w, http.StatusInternalServerError, "Database not configured")
+		return
+	}
+
 	type parameters struct {
-		Body string `json:"body"`
+		Body   string `json:"body"`
+		UserID string `json:"user_id"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
-	err := decoder.Decode(&params)
-	if err != nil {
+	if err := decoder.Decode(&params); err != nil {
 		log.Printf("Error decoding parameters: %s", err)
 		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
 		return
@@ -191,9 +197,35 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, struct {
-		CleanedBody string `json:"cleaned_body"`
-	}{CleanedBody: cleanChirp(params.Body)})
+	userID, err := uuid.Parse(params.UserID)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid user_id")
+		return
+	}
+
+	chirp, err := cfg.dbQueries.CreateChirp(r.Context(), database.CreateChirpParams{
+		Body:   cleanChirp(params.Body),
+		UserID: userID,
+	})
+	if err != nil {
+		log.Printf("Error creating chirp: %s", err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create chirp")
+		return
+	}
+
+	respondWithJSON(w, http.StatusCreated, struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+		Body      string `json:"body"`
+		UserID    string `json:"user_id"`
+	}{
+		ID:        chirp.ID.String(),
+		CreatedAt: chirp.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt: chirp.UpdatedAt.UTC().Format(time.RFC3339),
+		Body:      chirp.Body,
+		UserID:    chirp.UserID.String(),
+	})
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {

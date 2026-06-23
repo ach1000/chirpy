@@ -13,6 +13,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/ach1000/chirpy/internal/database"
+	"github.com/google/uuid"
 )
 
 func TestServeIndexHTML(t *testing.T) {
@@ -170,84 +171,142 @@ func TestMethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestValidateChirpEndpoint(t *testing.T) {
-	server := httptest.NewServer(makeHandler())
-	defer server.Close()
+func TestCreateChirpEndpoint(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	createdAt := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
+	chirpID := "94b7e44c-3604-42e3-bef7-ebfcc3efff8f"
+	userIDStr := "50746277-23c6-4d85-a890-564c0044c2fb"
+	userID := uuid.MustParse(userIDStr)
 
 	tests := []struct {
 		name         string
 		body         string
 		expectedCode int
-		expectedKey  string
-		expectedBody string
+		setupMock    func()
+		checkBody    func(t *testing.T, result map[string]any)
 	}{
 		{
-			name:         "valid chirp",
-			body:         `{"body":"This is an opinion I need to share with the world"}`,
-			expectedCode: http.StatusOK,
-			expectedKey:  "cleaned_body",
-			expectedBody: "This is an opinion I need to share with the world",
+			name:         "valid chirp saved to db",
+			body:         `{"body":"Hello, world!","user_id":"` + userIDStr + `"}`,
+			expectedCode: http.StatusCreated,
+			setupMock: func() {
+				mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO chirps (id, created_at, updated_at, body, user_id)")).
+					WithArgs("Hello, world!", userID).
+					WillReturnRows(
+						sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}).
+							AddRow(chirpID, createdAt, createdAt, "Hello, world!", userIDStr),
+					)
+			},
+			checkBody: func(t *testing.T, result map[string]any) {
+				if result["id"] != chirpID {
+					t.Errorf("expected id %q, got %v", chirpID, result["id"])
+				}
+				if result["body"] != "Hello, world!" {
+					t.Errorf("expected body 'Hello, world!', got %v", result["body"])
+				}
+				if result["user_id"] != userIDStr {
+					t.Errorf("expected user_id %q, got %v", userIDStr, result["user_id"])
+				}
+				if _, err := time.Parse(time.RFC3339, result["created_at"].(string)); err != nil {
+					t.Errorf("created_at not RFC3339: %v", err)
+				}
+				if _, err := time.Parse(time.RFC3339, result["updated_at"].(string)); err != nil {
+					t.Errorf("updated_at not RFC3339: %v", err)
+				}
+			},
 		},
 		{
-			name:         "replaces profane words case insensitively",
-			body:         `{"body":"This kerfuffle and SHARBERT and fornax should change"}`,
-			expectedCode: http.StatusOK,
-			expectedKey:  "cleaned_body",
-			expectedBody: "This **** and **** and **** should change",
+			name:         "profanity is cleaned before saving",
+			body:         `{"body":"This kerfuffle and SHARBERT!","user_id":"` + userIDStr + `"}`,
+			expectedCode: http.StatusCreated,
+			setupMock: func() {
+				mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO chirps (id, created_at, updated_at, body, user_id)")).
+					WithArgs("This **** and SHARBERT!", userID).
+					WillReturnRows(
+						sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}).
+							AddRow(chirpID, createdAt, createdAt, "This **** and SHARBERT!", userIDStr),
+					)
+			},
+			checkBody: func(t *testing.T, result map[string]any) {
+				if result["body"] != "This **** and SHARBERT!" {
+					t.Errorf("expected cleaned body, got %v", result["body"])
+				}
+			},
 		},
 		{
-			name:         "does not replace punctuated words",
-			body:         `{"body":"Sharbert! stays, but sharbert changes"}`,
-			expectedCode: http.StatusOK,
-			expectedKey:  "cleaned_body",
-			expectedBody: "Sharbert! stays, but **** changes",
-		},
-		{
-			name:         "chirp too long",
-			body:         `{"body":"` + strings.Repeat("a", 141) + `"}`,
+			name:         "chirp too long returns 400",
+			body:         `{"body":"` + strings.Repeat("a", 141) + `","user_id":"` + userIDStr + `"}`,
 			expectedCode: http.StatusBadRequest,
-			expectedKey:  "error",
+			setupMock:    func() {},
+			checkBody: func(t *testing.T, result map[string]any) {
+				if _, ok := result["error"]; !ok {
+					t.Errorf("expected 'error' key in response, got: %v", result)
+				}
+			},
 		},
 		{
-			name:         "invalid JSON",
+			name:         "invalid user_id returns 400",
+			body:         `{"body":"Hello","user_id":"not-a-uuid"}`,
+			expectedCode: http.StatusBadRequest,
+			setupMock:    func() {},
+			checkBody: func(t *testing.T, result map[string]any) {
+				if _, ok := result["error"]; !ok {
+					t.Errorf("expected 'error' key in response, got: %v", result)
+				}
+			},
+		},
+		{
+			name:         "invalid JSON returns 500",
 			body:         `{"body":`,
 			expectedCode: http.StatusInternalServerError,
-			expectedKey:  "error",
+			setupMock:    func() {},
+			checkBody: func(t *testing.T, result map[string]any) {
+				if _, ok := result["error"]; !ok {
+					t.Errorf("expected 'error' key in response, got: %v", result)
+				}
+			},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			resp, err := http.Post(server.URL+"/api/validate_chirp", "application/json", bytes.NewBufferString(tc.body))
+			tc.setupMock()
+			cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+			server := httptest.NewServer(makeHandlerWithConfig(cfg))
+			defer server.Close()
+
+			resp, err := http.Post(server.URL+"/api/chirps", "application/json", bytes.NewBufferString(tc.body))
 			if err != nil {
-				t.Fatalf("Failed to make request: %v", err)
+				t.Fatalf("failed to make request: %v", err)
 			}
 			defer resp.Body.Close()
 
 			if resp.StatusCode != tc.expectedCode {
-				t.Errorf("Expected status %d, got %d", tc.expectedCode, resp.StatusCode)
+				t.Errorf("expected status %d, got %d", tc.expectedCode, resp.StatusCode)
 			}
 
-			contentType := resp.Header.Get("Content-Type")
-			if contentType != "application/json" {
-				t.Errorf("Expected Content-Type 'application/json', got '%s'", contentType)
+			if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+				t.Errorf("expected Content-Type application/json, got %q", ct)
 			}
 
 			var result map[string]any
 			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-				t.Fatalf("Failed to decode response body: %v", err)
+				t.Fatalf("failed to decode response body: %v", err)
 			}
 
-			if _, ok := result[tc.expectedKey]; !ok {
-				t.Errorf("Expected key '%s' in response, got: %v", tc.expectedKey, result)
-			}
-
-			if tc.expectedBody != "" {
-				if got, ok := result[tc.expectedKey].(string); !ok || got != tc.expectedBody {
-					t.Errorf("Expected %s to be %q, got %v", tc.expectedKey, tc.expectedBody, result[tc.expectedKey])
-				}
+			if tc.checkBody != nil {
+				tc.checkBody(t, result)
 			}
 		})
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
 	}
 }
 
