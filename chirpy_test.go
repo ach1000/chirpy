@@ -15,7 +15,6 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/ach1000/chirpy/internal/auth"
 	"github.com/ach1000/chirpy/internal/database"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
@@ -691,10 +690,16 @@ func TestLoginEndpoint(t *testing.T) {
 			AddRow(userID, createdAt, createdAt, email, hash)
 	}
 
-	t.Run("returns 200 with a valid token for correct credentials", func(t *testing.T) {
+	t.Run("returns 200 with a valid access token and refresh token for correct credentials", func(t *testing.T) {
 		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, email, hashed_password")).
 			WithArgs(email).
 			WillReturnRows(makeUserRows())
+		mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO refresh_tokens")).
+			WithArgs(sqlmock.AnyArg(), uuid.MustParse(userID), sqlmock.AnyArg()).
+			WillReturnRows(
+				sqlmock.NewRows([]string{"token", "created_at", "updated_at", "user_id", "expires_at", "revoked_at"}).
+					AddRow("some-refresh-token", createdAt, createdAt, userID, createdAt.AddDate(0, 0, 60), nil),
+			)
 
 		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
 		server := httptest.NewServer(makeHandlerWithConfig(cfg))
@@ -724,6 +729,9 @@ func TestLoginEndpoint(t *testing.T) {
 		if _, hasHash := result["hashed_password"]; hasHash {
 			t.Errorf("response should not include hashed_password")
 		}
+		if result["refresh_token"] != "some-refresh-token" {
+			t.Errorf("expected refresh_token %q, got %v", "some-refresh-token", result["refresh_token"])
+		}
 
 		token, _ := result["token"].(string)
 		gotUserID, err := auth.ValidateJWT(token, jwtSecret)
@@ -732,38 +740,6 @@ func TestLoginEndpoint(t *testing.T) {
 		}
 		if gotUserID.String() != userID {
 			t.Errorf("expected token subject %q, got %v", userID, gotUserID)
-		}
-	})
-
-	t.Run("caps expires_in_seconds at 1 hour", func(t *testing.T) {
-		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, email, hashed_password")).
-			WithArgs(email).
-			WillReturnRows(makeUserRows())
-
-		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
-		server := httptest.NewServer(makeHandlerWithConfig(cfg))
-		defer server.Close()
-
-		resp, err := http.Post(server.URL+"/api/login", "application/json", bytes.NewBufferString(`{"email":"`+email+`","password":"`+password+`","expires_in_seconds":7200}`))
-		if err != nil {
-			t.Fatalf("failed to create request: %v", err)
-		}
-		defer resp.Body.Close()
-
-		var result map[string]any
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			t.Fatalf("failed to decode response: %v", err)
-		}
-
-		token, _ := result["token"].(string)
-		claims := &jwt.RegisteredClaims{}
-		if _, _, err := jwt.NewParser().ParseUnverified(token, claims); err != nil {
-			t.Fatalf("failed to parse token: %v", err)
-		}
-
-		maxExpiry := time.Now().Add(time.Hour + time.Minute)
-		if claims.ExpiresAt.Time.After(maxExpiry) {
-			t.Errorf("expected expiry capped at ~1 hour, got %v", claims.ExpiresAt.Time)
 		}
 	})
 
@@ -799,6 +775,162 @@ func TestLoginEndpoint(t *testing.T) {
 		resp, err := http.Post(server.URL+"/api/login", "application/json", bytes.NewBufferString(`{"email":"missing@example.com","password":"whatever"}`))
 		if err != nil {
 			t.Fatalf("failed to create request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected status 401, got %d", resp.StatusCode)
+		}
+	})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+func TestRefreshEndpoint(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	createdAt := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	userID := "50746277-23c6-4d85-a890-564c0044c2fb"
+	email := "user@example.com"
+	jwtSecret := "test-secret"
+
+	t.Run("returns 200 with a new access token for a valid refresh token", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT users.id, users.created_at, users.updated_at, users.email, users.hashed_password")).
+			WithArgs("valid-refresh-token").
+			WillReturnRows(
+				sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password"}).
+					AddRow(userID, createdAt, createdAt, email, "hash"),
+			)
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/refresh", nil)
+		if err != nil {
+			t.Fatalf("failed to build request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer valid-refresh-token")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", resp.StatusCode)
+		}
+
+		var result map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		token, _ := result["token"].(string)
+		gotUserID, err := auth.ValidateJWT(token, jwtSecret)
+		if err != nil {
+			t.Fatalf("expected a valid JWT in the response, got error: %v", err)
+		}
+		if gotUserID.String() != userID {
+			t.Errorf("expected token subject %q, got %v", userID, gotUserID)
+		}
+	})
+
+	t.Run("returns 401 for missing Authorization header", func(t *testing.T) {
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		resp, err := http.Post(server.URL+"/api/refresh", "", nil)
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected status 401, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("returns 401 for expired or revoked refresh token", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT users.id, users.created_at, users.updated_at, users.email, users.hashed_password")).
+			WithArgs("expired-refresh-token").
+			WillReturnError(sql.ErrNoRows)
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/refresh", nil)
+		if err != nil {
+			t.Fatalf("failed to build request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer expired-refresh-token")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected status 401, got %d", resp.StatusCode)
+		}
+	})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+func TestRevokeEndpoint(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	t.Run("returns 204 and revokes the token", func(t *testing.T) {
+		mock.ExpectExec(regexp.QuoteMeta("UPDATE refresh_tokens")).
+			WithArgs("some-refresh-token").
+			WillReturnResult(sqlmock.NewResult(0, 1))
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/revoke", nil)
+		if err != nil {
+			t.Fatalf("failed to build request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer some-refresh-token")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("expected status 204, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("returns 401 for missing Authorization header", func(t *testing.T) {
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		resp, err := http.Post(server.URL+"/api/revoke", "", nil)
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
 		}
 		defer resp.Body.Close()
 

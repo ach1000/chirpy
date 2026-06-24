@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/hex"
 	"net/http"
 	"testing"
 	"time"
@@ -118,5 +119,21 @@ func TestGetBearerTokenMalformedHeader(t *testing.T) {
 
 	if _, err := GetBearerToken(headers); err == nil {
 		t.Fatalf("expected an error for a header missing the Bearer prefix")
+	}
+}
+
+func TestMakeRefreshToken(t *testing.T) {
+	token := MakeRefreshToken()
+
+	if len(token) != 64 {
+		t.Fatalf("expected a 64-character hex string (32 bytes), got %d characters: %q", len(token), token)
+	}
+
+	if _, err := hex.DecodeString(token); err != nil {
+		t.Fatalf("expected a valid hex string, got error: %v", err)
+	}
+
+	if other := MakeRefreshToken(); other == token {
+		t.Fatalf("expected two calls to MakeRefreshToken to produce different tokens")
 	}
 }
