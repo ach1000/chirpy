@@ -5,52 +5,17 @@ This is a simple Go HTTP fileserver that binds to port 8080 and serves static fi
 
 ## Architecture
 
-### Current Implementation
-The server is implemented in `chirpy.go` with the following components:
+`chirpy.go` builds an `http.ServeMux` in `makeHandlerWithConfig(apiCfg)` (wrapped by `makeHandler()` for production use) and registers:
+- `GET /api/healthz`: readiness check, 200 "OK"
+- `/app/`: static fileserver rooted at `.` via `http.StripPrefix`+`http.FileServer` (e.g. `/app/index.html` → `index.html`), wrapped in `middlewareMetricsInc`, which increments `apiConfig.fileserverHits` (`atomic.Int32`) on every hit
+- `GET /admin/metrics`: HTML page showing the current hit count
+- `POST /admin/reset`: resets the hit count; restricted to `PLATFORM=dev` (`403` otherwise), and in `dev` also deletes all users via SQLC `DeleteUsers`
+- `POST /api/users`, `POST /api/login`: see API additions under SQLC and DB Wiring
+- `POST /api/chirps`, `GET /api/chirps`, `GET /api/chirps/{chirpID}`: chirp CRUD; create validates body length (140 chars max) and `user_id` as a UUID, cleans profanity, and saves via SQLC `CreateChirp`
 
-1. **apiConfig struct**: Holds in-memory server state
-   - `fileserverHits atomic.Int32`: count of requests served through the `/app/` handler, safe for concurrent access
+`respondWithJSON`/`respondWithError` centralize JSON response handling. `userResponse`/`chirpResponse` (built via `newUserResponse`/`newChirpResponse`) are the shared resource shapes returned by the user and chirp handlers.
 
-2. **makeHandler()** function: Builds and returns the configured `http.Handler` (mux), independent of starting a real server
-   - Creates an `apiConfig` instance (`apiCfg`)
-   - Creates an http.ServeMux (request multiplexer/router)
-   - Registers handlers in this order:
-     - `GET /api/healthz`: Readiness endpoint that returns 200 OK with "OK" message
-     - `/app/` path: Serves files from the current directory (`.`) via `http.StripPrefix` and `http.FileServer`, wrapped in `apiCfg.middlewareMetricsInc`
-     - `GET /admin/metrics`: Returns the current hit count rendered as HTML
-     - `POST /admin/reset`: Resets the hit count to 0
-     - `POST /api/chirps` accepts `{ "body": "...", "user_id": "..." }`, validates body length (max 140 chars), cleans profanity, saves to DB via SQLC `CreateChirp`, and returns `201 Created` with the full chirp resource.
-   - Returns the mux
-
-3. **main()** function: Sets up and starts the server
-   - Creates an http.Server struct configured with:
-     - `Handler`: Set to `makeHandler()`
-     - `Addr`: Set to ":8080"
-   - Calls `ListenAndServe()` to start the HTTP server
-
-4. **handlerReadiness()** function: Handles health check requests
-   - Sets Content-Type header to "text/plain; charset=utf-8"
-   - Writes HTTP 200 OK status code
-   - Writes response body "OK"
-   - Used for checking if the server is ready to receive traffic
-   - Only registered for GET; other methods get an automatic 405
-
-5. **middlewareMetricsInc()** method on `*apiConfig`: wraps an `http.Handler` and increments `fileserverHits` (via `.Add(1)`) on every request before calling the wrapped handler
-
-6. **handlerMetrics()** method on `*apiConfig`: writes an HTML page (Content-Type `text/html; charset=utf-8`) showing "Chirpy has been visited x times!", where `x` is the current `fileserverHits` value (via `.Load()`), built with `fmt.Fprintf` against an HTML template
-
-7. **handlerReset()** method on `*apiConfig`: resets `fileserverHits` to 0 (via `.Store(0)`) and returns 200 OK
-
-8. **handlerChirpsCreate()** method on `*apiConfig`: decodes `{"body": "...", "user_id": "..."}`, returns 500 on decode failure, 400 if body exceeds 140 chars, 400 if `user_id` is not a valid UUID; otherwise cleans profanity, calls SQLC `CreateChirp`, returns 201 with `{"id", "created_at", "updated_at", "body", "user_id"}`
-
-9. **respondWithJSON() / respondWithError()** helpers: `respondWithJSON` marshals any payload to JSON, sets `Content-Type: application/json`, and writes the status code + body; `respondWithError` wraps it to emit `{"error": msg}`
-
-### FileServer Behavior
-**App Handler** (`/app/`):
-- Serves files from the current directory (`.`)
-- Uses `http.StripPrefix` to remove `/app/` prefix from request path
-- Automatically serves `index.html` when accessing `/app/`
-- Example: Request to `/app/index.html` serves `index.html`
+`main()` starts an `http.Server` on `:8080` using `makeHandler()`.
 
 ## Building and Running
 
@@ -80,23 +45,16 @@ go install github.com/pressly/goose/v3/cmd/goose@latest
 ```
 
 - If `goose` is not on PATH, use `$(go env GOPATH)/bin/goose`.
-- Verified migration workflow from `sql/schema`:
-
-```bash
-$(go env GOPATH)/bin/goose postgres "postgres://postgres:postgres@localhost:5432/chirpy" up
-$(go env GOPATH)/bin/goose postgres "postgres://postgres:postgres@localhost:5432/chirpy" down
-$(go env GOPATH)/bin/goose postgres "postgres://postgres:postgres@localhost:5432/chirpy" up
-```
-
-- Verified with `psql` that the `users` table exists after the final `up`.
+- Verified workflow from `sql/schema`: `goose postgres "<conn string>" up` (and `down` to roll back).
 
 ## SQLC and DB Wiring
 - SQLC config file: `sqlc.yaml` (version 2).
 - SQLC reads schema from `sql/schema` and queries from `sql/queries`.
 - SQLC generated Go package output: `internal/database`.
 - Current query file: `sql/queries/users.sql` with `CreateUser` insert query.
-- `sql/queries/users.sql` also includes `DeleteUsers` for admin reset behavior.
+- `sql/queries/users.sql` also includes `DeleteUsers` for admin reset behavior, and `GetUserByEmail` for login lookups.
 - `sql/queries/chirps.sql` has `CreateChirp` query (INSERT with body and user_id params).
+- `users` table has a non-null `hashed_password TEXT` column (default `'unset'`, added in migration `003_users_hashed_password.sql`).
 - SQLC CLI install/verify:
 
 ```bash
@@ -121,13 +79,14 @@ sqlc generate
    - Creates SQLC queries via `database.New(db)`.
    - Stores `*database.Queries` on `apiConfig` for handler access.
 - API additions:
-   - `POST /api/users` creates a user from JSON body `{ "email": "..." }` using SQLC `CreateUser(r.Context(), email)` and returns `201 Created` with user fields.
-   - `POST /admin/reset` is restricted to `PLATFORM=dev`; otherwise returns `403 Forbidden`.
-   - In `dev`, `POST /admin/reset` deletes all users via SQLC `DeleteUsers` and also resets in-memory fileserver metrics.
+   - `POST /api/users` creates a user from JSON body `{ "email": "...", "password": "..." }`; hashes the password with `internal/auth.HashPassword` before storing, returns `201 Created` with `{id, created_at, updated_at, email}` (never the hash).
+   - `POST /api/login` checks `{ "email": "...", "password": "..." }` against the stored hash via `internal/auth.CheckPasswordHash`; any lookup/mismatch failure returns `401` with `"Incorrect email or password"`, otherwise `200` with the same user fields as `POST /api/users`.
+- Password hashing: `internal/auth` package wraps `github.com/alexedwards/argon2id` (`HashPassword`, `CheckPasswordHash`), tested in `internal/auth/auth_test.go`.
 - Required Go dependencies added:
    - `github.com/google/uuid`
    - `github.com/lib/pq`
    - `github.com/joho/godotenv`
+   - `github.com/alexedwards/argon2id`
 
 ## Testing
 Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `httptest.NewServer(makeHandler())` to exercise the real mux without binding to the production port:
@@ -138,24 +97,13 @@ Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `htt
 - **TestMethodNotAllowed**: wrong-method requests to `/api/healthz`, `/admin/metrics`, `/admin/reset` all return 405
 - **TestCreateChirpEndpoint**: table-driven test against `POST /api/chirps` using sqlmock; covers valid chirp creation (201 with all fields), profanity cleaning before DB insert, too-long chirp (400), invalid UUID user_id (400), malformed JSON (500)
 - **TestMiddlewareMetricsInc**: calls `middlewareMetricsInc` directly against a stub handler and checks `fileserverHits` increments correctly
-- **TestCreateUserEndpoint**: verifies `POST /api/users` returns 201 with `id`, `created_at`, `updated_at`, and `email` in the expected JSON shape
+- **TestCreateUserEndpoint**: verifies `POST /api/users` hashes the password and returns 201 with `id`, `created_at`, `updated_at`, and `email` (no password/hash) in the expected JSON shape
+- **TestCreateUserEndpointMissingPassword**: missing `password` field returns 400
+- **TestLoginEndpoint**: table of subtests covering `POST /api/login` with correct credentials (200 + user resource), wrong password (401), and unknown email (401)
 - **TestResetEndpointForbiddenInNonDev / TestResetEndpointDeletesUsersInDev**: verify `POST /admin/reset` returns 403 outside `dev`, and in `dev` it executes user deletion plus resets metrics
 
 ### Manual Testing
-- **Health Check** (`GET /api/healthz`): Returns 200 OK with "OK" message; other methods get 405
-- **App Path** (`/app/`): Serves index.html and other files from the current directory; each hit increments the metrics counter
-- **Metrics** (`GET /admin/metrics`): Returns an HTML page showing the visit count; meant to be viewed in a browser; other methods get 405
-- **Reset** (`POST /admin/reset`): Resets the hit counter to 0; other methods get 405
-- **Chirps** (`POST /api/chirps`): Accepts `{"body": "...", "user_id": "..."}`, validates length and UUID, cleans profanity, saves to DB, returns 201 with full chirp resource
-
-Example:
-```bash
-curl http://localhost:8080/api/healthz
-curl http://localhost:8080/app/
-curl http://localhost:8080/admin/metrics
-curl -X POST http://localhost:8080/admin/reset
-curl -X POST http://localhost:8080/api/chirps -d '{"body":"hello","user_id":"<uuid>"}'
-```
+Endpoint behavior matches the Architecture section above; `/admin/metrics` is meant to be viewed in a browser. Quick check: `curl http://localhost:8080/api/healthz`.
 
 ## Key Design Decisions
 - **Health Check Endpoint**: A dedicated `/api/healthz` readiness endpoint allows external systems (load balancers, orchestration systems) to monitor server health
@@ -163,20 +111,21 @@ curl -X POST http://localhost:8080/api/chirps -d '{"body":"hello","user_id":"<uu
 - **API Namespace**: Non-fileserver, externally-facing endpoints are served under the `/api` path prefix, keeping API routing decoupled from the website path even though the server is currently a monolith
 - **Admin Namespace**: Endpoints intended for internal/administrative use (`/admin/metrics`, `/admin/reset`) are served under a separate `/admin` path prefix purely for organizational clarity — there is nothing inherently more secure about this namespace
 - **HTML Admin Metrics**: `/admin/metrics` returns a small HTML page (not plain text) so it can be loaded and viewed directly in a browser, with the count updating on refresh as `/app/` is hit
-- **http.StripPrefix**: Used to cleanly map the `/app/` URL path to the filesystem root (e.g., `/app/index.html` → `index.html`)
-- **FileServer Handler**: Uses Go's standard `http.FileServer` to serve static files without custom route logic
-- **Standard Library Only**: Uses only Go's `net/http` package (no external dependencies)
-- **Method-Specific Routing**: `/api/healthz` and `/admin/metrics` are registered as `GET`, and `/admin/reset`/`/api/validate_chirp` as `POST`, using Go 1.22+'s `"METHOD /path"` mux pattern syntax — mismatched methods get an automatic 405 Method Not Allowed
+- **Method-Specific Routing**: routes use Go 1.22+'s `"METHOD /path"` mux pattern syntax — mismatched methods get an automatic 405 Method Not Allowed
 - **makeHandler() Extraction**: Mux/handler setup lives in `makeHandler() http.Handler`, separate from `main()`, so it can be exercised in tests via `httptest.NewServer(makeHandler())` without starting a real listener
 - **JSON Request/Response Helpers**: `respondWithJSON`/`respondWithError` centralize JSON marshalling and header/status-code handling so future JSON endpoints don't repeat that boilerplate
+- **Response Type Helpers**: `userResponse`/`newUserResponse` and `chirpResponse`/`newChirpResponse` are shared response shapes so every handler returning a user or chirp resource (create, get, login, list) builds it the same way instead of redeclaring an anonymous struct
 
 ## Project Structure
 ```
 chirpy/
 ├── sql/
 │   └── schema/
-│       ├── 001_users.sql   # Goose migration: create/drop users table
-│       └── 002_chirps.sql  # Goose migration: create/drop chirps table (FK -> users ON DELETE CASCADE)
+│       ├── 001_users.sql                    # Goose migration: create/drop users table
+│       ├── 002_chirps.sql                   # Goose migration: create/drop chirps table (FK -> users ON DELETE CASCADE)
+│       └── 003_users_hashed_password.sql    # Goose migration: add non-null hashed_password column (default 'unset')
+├── internal/
+│   └── auth/        # Password hashing helpers (argon2id), see HashPassword/CheckPasswordHash above
 ├── chirpy.go        # Server implementation (main, makeHandler, handlerReadiness, apiConfig handlers)
 ├── chirpy_test.go   # Unit tests for the handlers and middleware
 ├── go.mod           # Go module definition

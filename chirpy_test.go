@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/ach1000/chirpy/internal/auth"
 	"github.com/ach1000/chirpy/internal/database"
 	"github.com/google/uuid"
 )
@@ -529,19 +530,20 @@ func TestCreateUserEndpoint(t *testing.T) {
 	createdAt := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
 	userID := "50746277-23c6-4d85-a890-564c0044c2fb"
 	email := "user@example.com"
+	password := "04234"
 
-	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO users (id, created_at, updated_at, email)")).
-		WithArgs(email).
+	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO users (id, created_at, updated_at, email, hashed_password)")).
+		WithArgs(email, sqlmock.AnyArg()).
 		WillReturnRows(
-			sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email"}).
-				AddRow(userID, createdAt, createdAt, email),
+			sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password"}).
+				AddRow(userID, createdAt, createdAt, email, "$argon2id$v=19$m=65536,t=1,p=24$abc$def"),
 		)
 
 	cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
 	server := httptest.NewServer(makeHandlerWithConfig(cfg))
 	defer server.Close()
 
-	resp, err := http.Post(server.URL+"/api/users", "application/json", bytes.NewBufferString(`{"email":"user@example.com"}`))
+	resp, err := http.Post(server.URL+"/api/users", "application/json", bytes.NewBufferString(`{"email":"user@example.com","password":"`+password+`"}`))
 	if err != nil {
 		t.Fatalf("failed to create user request: %v", err)
 	}
@@ -606,6 +608,130 @@ func TestCreateUserEndpointInvalidJSON(t *testing.T) {
 
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("expected status 500, got %d", resp.StatusCode)
+	}
+}
+
+func TestCreateUserEndpointMissingPassword(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	cfg := &apiConfig{platform: "dev", dbQueries: database.New(db)}
+	server := httptest.NewServer(makeHandlerWithConfig(cfg))
+	defer server.Close()
+
+	resp, err := http.Post(server.URL+"/api/users", "application/json", bytes.NewBufferString(`{"email":"user@example.com"}`))
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestLoginEndpoint(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	createdAt := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	userID := "50746277-23c6-4d85-a890-564c0044c2fb"
+	email := "user@example.com"
+	password := "04234"
+
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+
+	makeUserRows := func() *sqlmock.Rows {
+		return sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password"}).
+			AddRow(userID, createdAt, createdAt, email, hash)
+	}
+
+	t.Run("returns 200 for correct credentials", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, email, hashed_password")).
+			WithArgs(email).
+			WillReturnRows(makeUserRows())
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		resp, err := http.Post(server.URL+"/api/login", "application/json", bytes.NewBufferString(`{"email":"`+email+`","password":"`+password+`"}`))
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", resp.StatusCode)
+		}
+
+		var result map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if result["id"] != userID {
+			t.Errorf("expected id %q, got %v", userID, result["id"])
+		}
+		if result["email"] != email {
+			t.Errorf("expected email %q, got %v", email, result["email"])
+		}
+		if _, hasHash := result["hashed_password"]; hasHash {
+			t.Errorf("response should not include hashed_password")
+		}
+	})
+
+	t.Run("returns 401 for wrong password", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, email, hashed_password")).
+			WithArgs(email).
+			WillReturnRows(makeUserRows())
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		resp, err := http.Post(server.URL+"/api/login", "application/json", bytes.NewBufferString(`{"email":"`+email+`","password":"bad"}`))
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected status 401, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("returns 401 for missing user", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, email, hashed_password")).
+			WithArgs("missing@example.com").
+			WillReturnError(sql.ErrNoRows)
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		resp, err := http.Post(server.URL+"/api/login", "application/json", bytes.NewBufferString(`{"email":"missing@example.com","password":"whatever"}`))
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected status 401, got %d", resp.StatusCode)
+		}
+	})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
 	}
 }
 
