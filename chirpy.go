@@ -24,6 +24,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
 	platform       string
+	jwtSecret      string
 }
 
 func makeHandler() http.Handler {
@@ -56,6 +57,11 @@ func main() {
 	}
 	platform := os.Getenv("PLATFORM")
 
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		log.Fatal("JWT_SECRET must be set")
+	}
+
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Fatal(err)
@@ -67,7 +73,7 @@ func main() {
 	}
 
 	dbQueries := database.New(db)
-	apiCfg := &apiConfig{dbQueries: dbQueries, platform: platform}
+	apiCfg := &apiConfig{dbQueries: dbQueries, platform: platform, jwtSecret: jwtSecret}
 
 	server := &http.Server{
 		Addr:    ":8080",
@@ -126,6 +132,7 @@ type userResponse struct {
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 	Email     string `json:"email"`
+	Token     string `json:"token,omitempty"`
 }
 
 func newUserResponse(user database.User) userResponse {
@@ -187,8 +194,9 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type parameters struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email            string `json:"email"`
+		Password         string `json:"password"`
+		ExpiresInSeconds *int   `json:"expires_in_seconds"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -210,7 +218,24 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, newUserResponse(user))
+	expiresIn := time.Hour
+	if params.ExpiresInSeconds != nil {
+		requested := time.Duration(*params.ExpiresInSeconds) * time.Second
+		if requested > 0 && requested < expiresIn {
+			expiresIn = requested
+		}
+	}
+
+	token, err := auth.MakeJWT(user.ID, cfg.jwtSecret, expiresIn)
+	if err != nil {
+		log.Printf("Error creating JWT: %s", err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create token")
+		return
+	}
+
+	response := newUserResponse(user)
+	response.Token = token
+	respondWithJSON(w, http.StatusOK, response)
 }
 
 const maxChirpLength = 140
@@ -257,9 +282,20 @@ func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
 	type parameters struct {
-		Body   string `json:"body"`
-		UserID string `json:"user_id"`
+		Body string `json:"body"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -272,12 +308,6 @@ func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request
 
 	if len(params.Body) > maxChirpLength {
 		respondWithError(w, http.StatusBadRequest, "Chirp is too long")
-		return
-	}
-
-	userID, err := uuid.Parse(params.UserID)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid user_id")
 		return
 	}
 

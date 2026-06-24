@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -88,5 +89,34 @@ func TestValidateJWTWrongSecret(t *testing.T) {
 
 	if _, err := ValidateJWT(token, "wrong-secret"); err == nil {
 		t.Fatalf("expected token signed with a different secret to be rejected")
+	}
+}
+
+func TestGetBearerToken(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer abc.def.ghi")
+
+	token, err := GetBearerToken(headers)
+	if err != nil {
+		t.Fatalf("GetBearerToken failed: %v", err)
+	}
+
+	if token != "abc.def.ghi" {
+		t.Fatalf("expected token %q, got %q", "abc.def.ghi", token)
+	}
+}
+
+func TestGetBearerTokenMissingHeader(t *testing.T) {
+	if _, err := GetBearerToken(http.Header{}); err == nil {
+		t.Fatalf("expected an error when the Authorization header is missing")
+	}
+}
+
+func TestGetBearerTokenMalformedHeader(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Authorization", "abc.def.ghi")
+
+	if _, err := GetBearerToken(headers); err == nil {
+		t.Fatalf("expected an error for a header missing the Bearer prefix")
 	}
 }

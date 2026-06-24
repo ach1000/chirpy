@@ -11,7 +11,7 @@ This is a simple Go HTTP fileserver that binds to port 8080 and serves static fi
 - `GET /admin/metrics`: HTML page showing the current hit count
 - `POST /admin/reset`: resets the hit count; restricted to `PLATFORM=dev` (`403` otherwise), and in `dev` also deletes all users via SQLC `DeleteUsers`
 - `POST /api/users`, `POST /api/login`: see API additions under SQLC and DB Wiring
-- `POST /api/chirps`, `GET /api/chirps`, `GET /api/chirps/{chirpID}`: chirp CRUD; create validates body length (140 chars max) and `user_id` as a UUID, cleans profanity, and saves via SQLC `CreateChirp`
+- `POST /api/chirps`, `GET /api/chirps`, `GET /api/chirps/{chirpID}`: chirp CRUD; create requires a valid `Authorization: Bearer <JWT>` (the user id comes from the token, not the body), validates body length (140 chars max), cleans profanity, and saves via SQLC `CreateChirp`
 
 `respondWithJSON`/`respondWithError` centralize JSON response handling. `userResponse`/`chirpResponse` (built via `newUserResponse`/`newChirpResponse`) are the shared resource shapes returned by the user and chirp handlers.
 
@@ -71,19 +71,20 @@ sqlc generate
 - Environment configuration:
    - `.env` is used locally and ignored by git.
    - `DB_URL` includes `?sslmode=disable` for local Postgres.
+   - `JWT_SECRET` signs/verifies JWTs (generate with `openssl rand -base64 64`); server fails fast at startup if unset.
 - Server DB setup in `chirpy.go`:
    - Loads `.env` with `godotenv.Load()`.
-   - Reads `DB_URL` from environment.
-   - Reads `PLATFORM` from environment.
+   - Reads `DB_URL`, `PLATFORM`, `JWT_SECRET` from environment.
    - Opens Postgres with `sql.Open("postgres", dbURL)`.
    - Creates SQLC queries via `database.New(db)`.
-   - Stores `*database.Queries` on `apiConfig` for handler access.
+   - Stores `*database.Queries`, `platform`, and `jwtSecret` on `apiConfig` for handler access.
 - API additions:
    - `POST /api/users` creates a user from JSON body `{ "email": "...", "password": "..." }`; hashes the password with `internal/auth.HashPassword` before storing, returns `201 Created` with `{id, created_at, updated_at, email}` (never the hash).
-   - `POST /api/login` checks `{ "email": "...", "password": "..." }` against the stored hash via `internal/auth.CheckPasswordHash`; any lookup/mismatch failure returns `401` with `"Incorrect email or password"`, otherwise `200` with the same user fields as `POST /api/users`.
+   - `POST /api/login` checks `{ "email": "...", "password": "..." }` against the stored hash via `internal/auth.CheckPasswordHash`; any lookup/mismatch failure returns `401` with `"Incorrect email or password"`. On success returns `200` with the user fields plus a `token` (JWT via `internal/auth.MakeJWT`); optional body field `expires_in_seconds` sets the token lifetime, capped at 1 hour (the default).
 - `internal/auth` package (tested in `internal/auth/auth_test.go`):
    - Password hashing via `github.com/alexedwards/argon2id`: `HashPassword`, `CheckPasswordHash`.
    - JWTs via `github.com/golang-jwt/jwt/v5`: `MakeJWT(userID, tokenSecret, expiresIn)` signs an HS256 token (`Issuer: "chirpy-access"`, `Subject` = user ID, UTC `IssuedAt`/`ExpiresAt`); `ValidateJWT(tokenString, tokenSecret)` verifies signature/expiry and returns the user ID from `Subject`.
+   - `GetBearerToken(headers http.Header) (string, error)` extracts the token from `Authorization: Bearer <token>`, erroring if the header is missing or malformed.
 - Required Go dependencies added:
    - `github.com/google/uuid`
    - `github.com/lib/pq`
@@ -98,14 +99,14 @@ Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `htt
 - **TestMetricsEndpoint**: two hits to `/app/` followed by `GET /admin/metrics` returns HTML containing "Chirpy has been visited 2 times!"
 - **TestResetEndpoint**: a hit to `/app/` followed by `POST /admin/reset` brings `/admin/metrics` back to "Chirpy has been visited 0 times!"
 - **TestMethodNotAllowed**: wrong-method requests to `/api/healthz`, `/admin/metrics`, `/admin/reset` all return 405
-- **TestCreateChirpEndpoint**: table-driven test against `POST /api/chirps` using sqlmock; covers valid chirp creation (201 with all fields), profanity cleaning before DB insert, too-long chirp (400), invalid UUID user_id (400), malformed JSON (500)
+- **TestCreateChirpEndpoint**: table-driven test against `POST /api/chirps` using sqlmock and a real JWT in the `Authorization` header; covers valid chirp creation (201 with all fields), profanity cleaning before DB insert, too-long chirp (400), missing/invalid bearer token (401), malformed JSON (500)
 - **TestMiddlewareMetricsInc**: calls `middlewareMetricsInc` directly against a stub handler and checks `fileserverHits` increments correctly
 - **TestCreateUserEndpoint**: verifies `POST /api/users` hashes the password and returns 201 with `id`, `created_at`, `updated_at`, and `email` (no password/hash) in the expected JSON shape
 - **TestCreateUserEndpointMissingPassword**: missing `password` field returns 400
-- **TestLoginEndpoint**: table of subtests covering `POST /api/login` with correct credentials (200 + user resource), wrong password (401), and unknown email (401)
+- **TestLoginEndpoint**: table of subtests covering `POST /api/login` with correct credentials (200 + valid JWT for the user), `expires_in_seconds` capped at 1 hour, wrong password (401), and unknown email (401)
 - **TestResetEndpointForbiddenInNonDev / TestResetEndpointDeletesUsersInDev**: verify `POST /admin/reset` returns 403 outside `dev`, and in `dev` it executes user deletion plus resets metrics
 
-`internal/auth/auth_test.go` also covers JWTs: **TestMakeJWTAndValidateJWT** (round-trip), **TestValidateJWTExpired** (negative `expiresIn` rejected), **TestValidateJWTWrongSecret** (token signed with a different secret rejected).
+`internal/auth/auth_test.go` also covers: **TestMakeJWTAndValidateJWT** (round-trip), **TestValidateJWTExpired** (negative `expiresIn` rejected), **TestValidateJWTWrongSecret** (token signed with a different secret rejected), **TestGetBearerToken** / **TestGetBearerTokenMissingHeader** / **TestGetBearerTokenMalformedHeader**.
 
 ### Manual Testing
 Endpoint behavior matches the Architecture section above; `/admin/metrics` is meant to be viewed in a browser. Quick check: `curl http://localhost:8080/api/healthz`.

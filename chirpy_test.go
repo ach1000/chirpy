@@ -15,6 +15,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/ach1000/chirpy/internal/auth"
 	"github.com/ach1000/chirpy/internal/database"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
@@ -185,16 +186,24 @@ func TestCreateChirpEndpoint(t *testing.T) {
 	userIDStr := "50746277-23c6-4d85-a890-564c0044c2fb"
 	userID := uuid.MustParse(userIDStr)
 
+	jwtSecret := "test-secret"
+	validToken, err := auth.MakeJWT(userID, jwtSecret, time.Hour)
+	if err != nil {
+		t.Fatalf("failed to create test JWT: %v", err)
+	}
+
 	tests := []struct {
 		name         string
 		body         string
+		authHeader   string
 		expectedCode int
 		setupMock    func()
 		checkBody    func(t *testing.T, result map[string]any)
 	}{
 		{
 			name:         "valid chirp saved to db",
-			body:         `{"body":"Hello, world!","user_id":"` + userIDStr + `"}`,
+			body:         `{"body":"Hello, world!"}`,
+			authHeader:   "Bearer " + validToken,
 			expectedCode: http.StatusCreated,
 			setupMock: func() {
 				mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO chirps (id, created_at, updated_at, body, user_id)")).
@@ -224,7 +233,8 @@ func TestCreateChirpEndpoint(t *testing.T) {
 		},
 		{
 			name:         "profanity is cleaned before saving",
-			body:         `{"body":"This kerfuffle and SHARBERT!","user_id":"` + userIDStr + `"}`,
+			body:         `{"body":"This kerfuffle and SHARBERT!"}`,
+			authHeader:   "Bearer " + validToken,
 			expectedCode: http.StatusCreated,
 			setupMock: func() {
 				mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO chirps (id, created_at, updated_at, body, user_id)")).
@@ -242,7 +252,8 @@ func TestCreateChirpEndpoint(t *testing.T) {
 		},
 		{
 			name:         "chirp too long returns 400",
-			body:         `{"body":"` + strings.Repeat("a", 141) + `","user_id":"` + userIDStr + `"}`,
+			body:         `{"body":"` + strings.Repeat("a", 141) + `"}`,
+			authHeader:   "Bearer " + validToken,
 			expectedCode: http.StatusBadRequest,
 			setupMock:    func() {},
 			checkBody: func(t *testing.T, result map[string]any) {
@@ -252,9 +263,22 @@ func TestCreateChirpEndpoint(t *testing.T) {
 			},
 		},
 		{
-			name:         "invalid user_id returns 400",
-			body:         `{"body":"Hello","user_id":"not-a-uuid"}`,
-			expectedCode: http.StatusBadRequest,
+			name:         "missing Authorization header returns 401",
+			body:         `{"body":"Hello"}`,
+			authHeader:   "",
+			expectedCode: http.StatusUnauthorized,
+			setupMock:    func() {},
+			checkBody: func(t *testing.T, result map[string]any) {
+				if _, ok := result["error"]; !ok {
+					t.Errorf("expected 'error' key in response, got: %v", result)
+				}
+			},
+		},
+		{
+			name:         "invalid JWT returns 401",
+			body:         `{"body":"Hello"}`,
+			authHeader:   "Bearer not-a-real-token",
+			expectedCode: http.StatusUnauthorized,
 			setupMock:    func() {},
 			checkBody: func(t *testing.T, result map[string]any) {
 				if _, ok := result["error"]; !ok {
@@ -265,6 +289,7 @@ func TestCreateChirpEndpoint(t *testing.T) {
 		{
 			name:         "invalid JSON returns 500",
 			body:         `{"body":`,
+			authHeader:   "Bearer " + validToken,
 			expectedCode: http.StatusInternalServerError,
 			setupMock:    func() {},
 			checkBody: func(t *testing.T, result map[string]any) {
@@ -278,11 +303,20 @@ func TestCreateChirpEndpoint(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.setupMock()
-			cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+			cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
 			server := httptest.NewServer(makeHandlerWithConfig(cfg))
 			defer server.Close()
 
-			resp, err := http.Post(server.URL+"/api/chirps", "application/json", bytes.NewBufferString(tc.body))
+			req, err := http.NewRequest(http.MethodPost, server.URL+"/api/chirps", bytes.NewBufferString(tc.body))
+			if err != nil {
+				t.Fatalf("failed to build request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if tc.authHeader != "" {
+				req.Header.Set("Authorization", tc.authHeader)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
 				t.Fatalf("failed to make request: %v", err)
 			}
@@ -650,17 +684,19 @@ func TestLoginEndpoint(t *testing.T) {
 		t.Fatalf("failed to hash password: %v", err)
 	}
 
+	jwtSecret := "test-secret"
+
 	makeUserRows := func() *sqlmock.Rows {
 		return sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password"}).
 			AddRow(userID, createdAt, createdAt, email, hash)
 	}
 
-	t.Run("returns 200 for correct credentials", func(t *testing.T) {
+	t.Run("returns 200 with a valid token for correct credentials", func(t *testing.T) {
 		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, email, hashed_password")).
 			WithArgs(email).
 			WillReturnRows(makeUserRows())
 
-		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
 		server := httptest.NewServer(makeHandlerWithConfig(cfg))
 		defer server.Close()
 
@@ -688,6 +724,47 @@ func TestLoginEndpoint(t *testing.T) {
 		if _, hasHash := result["hashed_password"]; hasHash {
 			t.Errorf("response should not include hashed_password")
 		}
+
+		token, _ := result["token"].(string)
+		gotUserID, err := auth.ValidateJWT(token, jwtSecret)
+		if err != nil {
+			t.Fatalf("expected a valid JWT in the response, got error: %v", err)
+		}
+		if gotUserID.String() != userID {
+			t.Errorf("expected token subject %q, got %v", userID, gotUserID)
+		}
+	})
+
+	t.Run("caps expires_in_seconds at 1 hour", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, email, hashed_password")).
+			WithArgs(email).
+			WillReturnRows(makeUserRows())
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		resp, err := http.Post(server.URL+"/api/login", "application/json", bytes.NewBufferString(`{"email":"`+email+`","password":"`+password+`","expires_in_seconds":7200}`))
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var result map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		token, _ := result["token"].(string)
+		claims := &jwt.RegisteredClaims{}
+		if _, _, err := jwt.NewParser().ParseUnverified(token, claims); err != nil {
+			t.Fatalf("failed to parse token: %v", err)
+		}
+
+		maxExpiry := time.Now().Add(time.Hour + time.Minute)
+		if claims.ExpiresAt.Time.After(maxExpiry) {
+			t.Errorf("expected expiry capped at ~1 hour, got %v", claims.ExpiresAt.Time)
+		}
 	})
 
 	t.Run("returns 401 for wrong password", func(t *testing.T) {
@@ -695,7 +772,7 @@ func TestLoginEndpoint(t *testing.T) {
 			WithArgs(email).
 			WillReturnRows(makeUserRows())
 
-		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
 		server := httptest.NewServer(makeHandlerWithConfig(cfg))
 		defer server.Close()
 
@@ -715,7 +792,7 @@ func TestLoginEndpoint(t *testing.T) {
 			WithArgs("missing@example.com").
 			WillReturnError(sql.ErrNoRows)
 
-		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
 		server := httptest.NewServer(makeHandlerWithConfig(cfg))
 		defer server.Close()
 
