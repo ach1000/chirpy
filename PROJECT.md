@@ -81,12 +81,15 @@ sqlc generate
 - API additions:
    - `POST /api/users` creates a user from JSON body `{ "email": "...", "password": "..." }`; hashes the password with `internal/auth.HashPassword` before storing, returns `201 Created` with `{id, created_at, updated_at, email}` (never the hash).
    - `POST /api/login` checks `{ "email": "...", "password": "..." }` against the stored hash via `internal/auth.CheckPasswordHash`; any lookup/mismatch failure returns `401` with `"Incorrect email or password"`, otherwise `200` with the same user fields as `POST /api/users`.
-- Password hashing: `internal/auth` package wraps `github.com/alexedwards/argon2id` (`HashPassword`, `CheckPasswordHash`), tested in `internal/auth/auth_test.go`.
+- `internal/auth` package (tested in `internal/auth/auth_test.go`):
+   - Password hashing via `github.com/alexedwards/argon2id`: `HashPassword`, `CheckPasswordHash`.
+   - JWTs via `github.com/golang-jwt/jwt/v5`: `MakeJWT(userID, tokenSecret, expiresIn)` signs an HS256 token (`Issuer: "chirpy-access"`, `Subject` = user ID, UTC `IssuedAt`/`ExpiresAt`); `ValidateJWT(tokenString, tokenSecret)` verifies signature/expiry and returns the user ID from `Subject`.
 - Required Go dependencies added:
    - `github.com/google/uuid`
    - `github.com/lib/pq`
    - `github.com/joho/godotenv`
    - `github.com/alexedwards/argon2id`
+   - `github.com/golang-jwt/jwt/v5`
 
 ## Testing
 Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `httptest.NewServer(makeHandler())` to exercise the real mux without binding to the production port:
@@ -101,6 +104,8 @@ Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `htt
 - **TestCreateUserEndpointMissingPassword**: missing `password` field returns 400
 - **TestLoginEndpoint**: table of subtests covering `POST /api/login` with correct credentials (200 + user resource), wrong password (401), and unknown email (401)
 - **TestResetEndpointForbiddenInNonDev / TestResetEndpointDeletesUsersInDev**: verify `POST /admin/reset` returns 403 outside `dev`, and in `dev` it executes user deletion plus resets metrics
+
+`internal/auth/auth_test.go` also covers JWTs: **TestMakeJWTAndValidateJWT** (round-trip), **TestValidateJWTExpired** (negative `expiresIn` rejected), **TestValidateJWTWrongSecret** (token signed with a different secret rejected).
 
 ### Manual Testing
 Endpoint behavior matches the Architecture section above; `/admin/metrics` is meant to be viewed in a browser. Quick check: `curl http://localhost:8080/api/healthz`.
@@ -125,7 +130,7 @@ chirpy/
 │       ├── 002_chirps.sql                   # Goose migration: create/drop chirps table (FK -> users ON DELETE CASCADE)
 │       └── 003_users_hashed_password.sql    # Goose migration: add non-null hashed_password column (default 'unset')
 ├── internal/
-│   └── auth/        # Password hashing helpers (argon2id), see HashPassword/CheckPasswordHash above
+│   └── auth/        # Password hashing (argon2id) and JWT helpers, see SQLC and DB Wiring above
 ├── chirpy.go        # Server implementation (main, makeHandler, handlerReadiness, apiConfig handlers)
 ├── chirpy_test.go   # Unit tests for the handlers and middleware
 ├── go.mod           # Go module definition
@@ -145,4 +150,4 @@ When adding more static files or modifying the server:
 The FileServer will automatically serve any files placed in the served directory.
 
 ---
-**Note**: Update this file whenever significant changes are made to the server implementation.
+**Note**: Update this file whenever significant changes are made to the server implementation. Keep it under ~200 lines: fold updates into the existing section they belong to rather than appending a new dated section, and trim content that's directly derivable from the code.
