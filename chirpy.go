@@ -129,6 +129,10 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+type accessTokenResponse struct {
+	Token string `json:"token"`
+}
+
 type userResponse struct {
 	ID           string `json:"id"`
 	CreatedAt    string `json:"created_at"`
@@ -272,9 +276,7 @@ func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, struct {
-		Token string `json:"token"`
-	}{Token: token})
+	respondWithJSON(w, http.StatusOK, accessTokenResponse{Token: token})
 }
 
 func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
