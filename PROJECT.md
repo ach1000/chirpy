@@ -129,6 +129,8 @@ Endpoint behavior matches the Architecture section above; `/admin/metrics` is me
 - **JSON Request/Response Helpers**: `respondWithJSON`/`respondWithError` centralize JSON marshalling and header/status-code handling so future JSON endpoints don't repeat that boilerplate
 - **Response Type Helpers**: `userResponse`/`newUserResponse`, `chirpResponse`/`newChirpResponse`, and `accessTokenResponse` are shared response shapes so every handler returning a user, chirp, or token resource builds it the same way instead of redeclaring an anonymous struct
 - **Auth Helpers**: `apiConfig.requireBearerToken` (extract `Authorization: Bearer <token>` or write 401) and `apiConfig.requireAccessToken` (also validates it as a JWT) centralize the bearer-token check used by `handlerChirpsCreate`, `handlerRefresh`, and `handlerRevoke` instead of repeating it per handler
+- **Idempotent Revoke**: `POST /api/revoke` always returns `204`, even for an unknown/already-revoked token (`RevokeRefreshToken` is a plain `:exec` that doesn't check rows-affected). Intentional: it avoids letting a caller probe token validity via the response, and checking existence first would add a TOCTOU race against concurrent revokes without a transaction
+- **No Issuer Check in ValidateJWT**: `ValidateJWT` (`internal/auth/auth.go`) only checks signature and expiry, not `claims.Issuer` against the `tokenIssuer` constant. Intentional for now: there's only one JWT type/secret in the system, so there's nothing to distinguish it from; revisit if a second JWT-based token type is ever introduced
 
 ## Project Structure
 ```
