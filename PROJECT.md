@@ -127,7 +127,8 @@ Endpoint behavior matches the Architecture section above; `/admin/metrics` is me
 - **Method-Specific Routing**: routes use Go 1.22+'s `"METHOD /path"` mux pattern syntax — mismatched methods get an automatic 405 Method Not Allowed
 - **makeHandler() Extraction**: Mux/handler setup lives in `makeHandler() http.Handler`, separate from `main()`, so it can be exercised in tests via `httptest.NewServer(makeHandler())` without starting a real listener
 - **JSON Request/Response Helpers**: `respondWithJSON`/`respondWithError` centralize JSON marshalling and header/status-code handling so future JSON endpoints don't repeat that boilerplate
-- **Response Type Helpers**: `userResponse`/`newUserResponse` and `chirpResponse`/`newChirpResponse` are shared response shapes so every handler returning a user or chirp resource (create, get, login, list) builds it the same way instead of redeclaring an anonymous struct
+- **Response Type Helpers**: `userResponse`/`newUserResponse`, `chirpResponse`/`newChirpResponse`, and `accessTokenResponse` are shared response shapes so every handler returning a user, chirp, or token resource builds it the same way instead of redeclaring an anonymous struct
+- **Auth Helpers**: `apiConfig.requireBearerToken` (extract `Authorization: Bearer <token>` or write 401) and `apiConfig.requireAccessToken` (also validates it as a JWT) centralize the bearer-token check used by `handlerChirpsCreate`, `handlerRefresh`, and `handlerRevoke` instead of repeating it per handler
 
 ## Project Structure
 ```

@@ -251,15 +251,43 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, response)
 }
 
+// requireBearerToken extracts the bearer token from the Authorization header,
+// writing a 401 response and returning ok=false if it's missing or malformed.
+func (cfg *apiConfig) requireBearerToken(w http.ResponseWriter, r *http.Request) (token string, ok bool) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+		return "", false
+	}
+
+	return token, true
+}
+
+// requireAccessToken extracts and validates a bearer access token (JWT),
+// writing a 401 response and returning ok=false if it's missing or invalid.
+func (cfg *apiConfig) requireAccessToken(w http.ResponseWriter, r *http.Request) (userID uuid.UUID, ok bool) {
+	token, ok := cfg.requireBearerToken(w, r)
+	if !ok {
+		return uuid.UUID{}, false
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+		return uuid.UUID{}, false
+	}
+
+	return userID, true
+}
+
 func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
 	if cfg.dbQueries == nil {
 		respondWithError(w, http.StatusInternalServerError, "Database not configured")
 		return
 	}
 
-	refreshToken, err := auth.GetBearerToken(r.Header)
-	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+	refreshToken, ok := cfg.requireBearerToken(w, r)
+	if !ok {
 		return
 	}
 
@@ -285,9 +313,8 @@ func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	refreshToken, err := auth.GetBearerToken(r.Header)
-	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+	refreshToken, ok := cfg.requireBearerToken(w, r)
+	if !ok {
 		return
 	}
 
@@ -344,15 +371,8 @@ func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	token, err := auth.GetBearerToken(r.Header)
-	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
-		return
-	}
-
-	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
-	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+	userID, ok := cfg.requireAccessToken(w, r)
+	if !ok {
 		return
 	}
 
