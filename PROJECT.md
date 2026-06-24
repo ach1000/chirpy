@@ -56,6 +56,7 @@ go install github.com/pressly/goose/v3/cmd/goose@latest
 - `sql/queries/chirps.sql` has `CreateChirp` query (INSERT with body and user_id params).
 - `users` table has a non-null `hashed_password TEXT` column (default `'unset'`, added in migration `003_users_hashed_password.sql`).
 - `refresh_tokens` table (migration `004_refresh_tokens.sql`): `token` (PK, text), `created_at`, `updated_at`, `user_id` (FK → `users.id` ON DELETE CASCADE), `expires_at`, nullable `revoked_at`. Queries in `sql/queries/refresh_tokens.sql`: `CreateRefreshToken`, `GetUserFromRefreshToken` (join filtering out expired/revoked rows), `RevokeRefreshToken` (sets `revoked_at`/`updated_at` to now).
+- All `created_at`/`updated_at`/`expires_at`/`revoked_at` columns across `users`, `chirps`, `refresh_tokens` are `TIMESTAMPTZ`, not the bare `TIMESTAMP` SQL default — needed so refresh-token expiry comparisons (`expires_at > NOW()`) are correct regardless of the Postgres session's timezone, since `TIMESTAMPTZ` stores an absolute instant rather than a naive wall-clock value.
 - SQLC CLI install/verify:
 
 ```bash

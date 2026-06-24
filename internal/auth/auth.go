@@ -61,6 +61,9 @@ func GetBearerToken(headers http.Header) (string, error) {
 	return strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer ")), nil
 }
 
+// No error return per the spec; rand.Read failing means the OS entropy
+// source is broken, which we treat as unrecoverable rather than plumbing
+// an error through every caller.
 func MakeRefreshToken() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
