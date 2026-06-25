@@ -529,6 +529,145 @@ func TestGetChirpByIDEndpoint(t *testing.T) {
 	}
 }
 
+func TestDeleteChirpEndpoint(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	createdAt := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)
+	chirpID := "94b7e44c-3604-42e3-bef7-ebfcc3efff8f"
+	ownerIDStr := "50746277-23c6-4d85-a890-564c0044c2fb"
+	otherIDStr := "f0f87ec2-a8b5-48cc-b66a-a85ce7c7b862"
+	parsedChirpID := uuid.MustParse(chirpID)
+	ownerID := uuid.MustParse(ownerIDStr)
+	otherID := uuid.MustParse(otherIDStr)
+
+	jwtSecret := "test-secret"
+	ownerToken, err := auth.MakeJWT(ownerID, jwtSecret, time.Hour)
+	if err != nil {
+		t.Fatalf("failed to create owner JWT: %v", err)
+	}
+	otherToken, err := auth.MakeJWT(otherID, jwtSecret, time.Hour)
+	if err != nil {
+		t.Fatalf("failed to create other JWT: %v", err)
+	}
+
+	t.Run("owner can delete their chirp", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, body, user_id")).
+			WithArgs(parsedChirpID).
+			WillReturnRows(
+				sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}).
+					AddRow(chirpID, createdAt, createdAt, "mine", ownerIDStr),
+			)
+		mock.ExpectExec(regexp.QuoteMeta("DELETE FROM chirps")).
+			WithArgs(parsedChirpID).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/chirps/"+chirpID, nil)
+		if err != nil {
+			t.Fatalf("failed to build request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("expected status 204, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("non-owner gets 403", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, body, user_id")).
+			WithArgs(parsedChirpID).
+			WillReturnRows(
+				sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}).
+					AddRow(chirpID, createdAt, createdAt, "mine", ownerIDStr),
+			)
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/chirps/"+chirpID, nil)
+		if err != nil {
+			t.Fatalf("failed to build request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+otherToken)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected status 403, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("missing chirp returns 404", func(t *testing.T) {
+		missingID := "11111111-1111-1111-1111-111111111111"
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, body, user_id")).
+			WithArgs(uuid.MustParse(missingID)).
+			WillReturnError(sql.ErrNoRows)
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/chirps/"+missingID, nil)
+		if err != nil {
+			t.Fatalf("failed to build request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected status 404, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("missing Authorization header returns 401", func(t *testing.T) {
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/chirps/"+chirpID, nil)
+		if err != nil {
+			t.Fatalf("failed to build request: %v", err)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected status 401, got %d", resp.StatusCode)
+		}
+	})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
 func TestMiddlewareMetricsInc(t *testing.T) {
 	cfg := &apiConfig{}
 

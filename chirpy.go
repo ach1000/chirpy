@@ -45,6 +45,7 @@ func makeHandlerWithConfig(apiCfg *apiConfig) http.Handler {
 	mux.HandleFunc("POST /api/chirps", apiCfg.handlerChirpsCreate)
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlerChirpsGet)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerChirpsGetByID)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.handlerChirpsDelete)
 
 	return mux
 }
@@ -502,6 +503,49 @@ func (cfg *apiConfig) handlerChirpsGetByID(w http.ResponseWriter, r *http.Reques
 	}
 
 	respondWithJSON(w, http.StatusOK, newChirpResponse(chirp))
+}
+
+func (cfg *apiConfig) handlerChirpsDelete(w http.ResponseWriter, r *http.Request) {
+	if cfg.dbQueries == nil {
+		respondWithError(w, http.StatusInternalServerError, "Database not configured")
+		return
+	}
+
+	userID, ok := cfg.requireAccessToken(w, r)
+	if !ok {
+		return
+	}
+
+	chirpID, err := uuid.Parse(r.PathValue("chirpID"))
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "Chirp not found")
+		return
+	}
+
+	chirp, err := cfg.dbQueries.GetChirp(r.Context(), chirpID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, http.StatusNotFound, "Chirp not found")
+			return
+		}
+
+		log.Printf("Error getting chirp by ID: %s", err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get chirp")
+		return
+	}
+
+	if chirp.UserID != userID {
+		respondWithError(w, http.StatusForbidden, "You can only delete your own chirps")
+		return
+	}
+
+	if err := cfg.dbQueries.DeleteChirp(r.Context(), chirpID); err != nil {
+		log.Printf("Error deleting chirp: %s", err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't delete chirp")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {

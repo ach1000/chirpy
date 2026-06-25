@@ -11,7 +11,7 @@ This is a simple Go HTTP fileserver that binds to port 8080 and serves static fi
 - `GET /admin/metrics`: HTML page showing the current hit count
 - `POST /admin/reset`: resets the hit count; restricted to `PLATFORM=dev` (`403` otherwise), and in `dev` also deletes all users via SQLC `DeleteUsers`
 - `POST /api/users`, `PUT /api/users`, `POST /api/login`, `POST /api/refresh`, `POST /api/revoke`: see API additions under SQLC and DB Wiring
-- `POST /api/chirps`, `GET /api/chirps`, `GET /api/chirps/{chirpID}`: chirp CRUD; create requires a valid `Authorization: Bearer <JWT>` (the user id comes from the token, not the body), validates body length (140 chars max), cleans profanity, and saves via SQLC `CreateChirp`
+- `POST /api/chirps`, `GET /api/chirps`, `GET /api/chirps/{chirpID}`, `DELETE /api/chirps/{chirpID}`: chirp CRUD; create requires a valid `Authorization: Bearer <JWT>` (the user id comes from the token, not the body), validates body length (140 chars max), cleans profanity, and saves via SQLC `CreateChirp`. Delete requires a valid access token, looks up the chirp via `GetChirp`, returns `404` if missing, `403` if the token's user id doesn't match the chirp's `user_id`, otherwise deletes via SQLC `DeleteChirp` and returns `204`
 
 `respondWithJSON`/`respondWithError` centralize JSON response handling. `userResponse`/`chirpResponse` (built via `newUserResponse`/`newChirpResponse`) are the shared resource shapes returned by the user and chirp handlers.
 
@@ -53,7 +53,7 @@ go install github.com/pressly/goose/v3/cmd/goose@latest
 - SQLC generated Go package output: `internal/database`.
 - Current query file: `sql/queries/users.sql` with `CreateUser` insert query.
 - `sql/queries/users.sql` also includes `DeleteUsers` for admin reset behavior, `GetUserByEmail` for login lookups, and `UpdateUser` (sets `email`/`hashed_password`/`updated_at` by `id`) for the self-service update endpoint.
-- `sql/queries/chirps.sql` has `CreateChirp` query (INSERT with body and user_id params).
+- `sql/queries/chirps.sql` has `CreateChirp` (INSERT with body and user_id params), `GetChirps`, `GetChirp` (by id), and `DeleteChirp` (by id) queries.
 - `users` table has a non-null `hashed_password TEXT` column (default `'unset'`, added in migration `003_users_hashed_password.sql`).
 - `refresh_tokens` table (migration `004_refresh_tokens.sql`): `token` (PK, text), `created_at`, `updated_at`, `user_id` (FK → `users.id` ON DELETE CASCADE), `expires_at`, nullable `revoked_at`. Queries in `sql/queries/refresh_tokens.sql`: `CreateRefreshToken`, `GetUserFromRefreshToken` (join filtering out expired/revoked rows), `RevokeRefreshToken` (sets `revoked_at`/`updated_at` to now).
 - All `created_at`/`updated_at`/`expires_at`/`revoked_at` columns across `users`, `chirps`, `refresh_tokens` are `TIMESTAMPTZ`, not the bare `TIMESTAMP` SQL default — needed so refresh-token expiry comparisons (`expires_at > NOW()`) are correct regardless of the Postgres session's timezone, since `TIMESTAMPTZ` stores an absolute instant rather than a naive wall-clock value.
@@ -106,6 +106,7 @@ Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `htt
 - **TestResetEndpoint**: a hit to `/app/` followed by `POST /admin/reset` brings `/admin/metrics` back to "Chirpy has been visited 0 times!"
 - **TestMethodNotAllowed**: wrong-method requests to `/api/healthz`, `/admin/metrics`, `/admin/reset` all return 405
 - **TestCreateChirpEndpoint**: table-driven test against `POST /api/chirps` using sqlmock and a real JWT in the `Authorization` header; covers valid chirp creation (201 with all fields), profanity cleaning before DB insert, too-long chirp (400), missing/invalid bearer token (401), malformed JSON (500)
+- **TestDeleteChirpEndpoint**: subtests against `DELETE /api/chirps/{chirpID}` covering owner deletion (204), non-owner attempt (403), missing chirp (404), and missing Authorization header (401)
 - **TestMiddlewareMetricsInc**: calls `middlewareMetricsInc` directly against a stub handler and checks `fileserverHits` increments correctly
 - **TestCreateUserEndpoint**: verifies `POST /api/users` hashes the password and returns 201 with `id`, `created_at`, `updated_at`, and `email` (no password/hash) in the expected JSON shape
 - **TestCreateUserEndpointMissingPassword**: missing `password` field returns 400
