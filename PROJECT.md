@@ -10,7 +10,7 @@ This is a simple Go HTTP fileserver that binds to port 8080 and serves static fi
 - `/app/`: static fileserver rooted at `.` via `http.StripPrefix`+`http.FileServer` (e.g. `/app/index.html` → `index.html`), wrapped in `middlewareMetricsInc`, which increments `apiConfig.fileserverHits` (`atomic.Int32`) on every hit
 - `GET /admin/metrics`: HTML page showing the current hit count
 - `POST /admin/reset`: resets the hit count; restricted to `PLATFORM=dev` (`403` otherwise), and in `dev` also deletes all users via SQLC `DeleteUsers`
-- `POST /api/users`, `POST /api/login`, `POST /api/refresh`, `POST /api/revoke`: see API additions under SQLC and DB Wiring
+- `POST /api/users`, `PUT /api/users`, `POST /api/login`, `POST /api/refresh`, `POST /api/revoke`: see API additions under SQLC and DB Wiring
 - `POST /api/chirps`, `GET /api/chirps`, `GET /api/chirps/{chirpID}`: chirp CRUD; create requires a valid `Authorization: Bearer <JWT>` (the user id comes from the token, not the body), validates body length (140 chars max), cleans profanity, and saves via SQLC `CreateChirp`
 
 `respondWithJSON`/`respondWithError` centralize JSON response handling. `userResponse`/`chirpResponse` (built via `newUserResponse`/`newChirpResponse`) are the shared resource shapes returned by the user and chirp handlers.
@@ -52,7 +52,7 @@ go install github.com/pressly/goose/v3/cmd/goose@latest
 - SQLC reads schema from `sql/schema` and queries from `sql/queries`.
 - SQLC generated Go package output: `internal/database`.
 - Current query file: `sql/queries/users.sql` with `CreateUser` insert query.
-- `sql/queries/users.sql` also includes `DeleteUsers` for admin reset behavior, and `GetUserByEmail` for login lookups.
+- `sql/queries/users.sql` also includes `DeleteUsers` for admin reset behavior, `GetUserByEmail` for login lookups, and `UpdateUser` (sets `email`/`hashed_password`/`updated_at` by `id`) for the self-service update endpoint.
 - `sql/queries/chirps.sql` has `CreateChirp` query (INSERT with body and user_id params).
 - `users` table has a non-null `hashed_password TEXT` column (default `'unset'`, added in migration `003_users_hashed_password.sql`).
 - `refresh_tokens` table (migration `004_refresh_tokens.sql`): `token` (PK, text), `created_at`, `updated_at`, `user_id` (FK → `users.id` ON DELETE CASCADE), `expires_at`, nullable `revoked_at`. Queries in `sql/queries/refresh_tokens.sql`: `CreateRefreshToken`, `GetUserFromRefreshToken` (join filtering out expired/revoked rows), `RevokeRefreshToken` (sets `revoked_at`/`updated_at` to now).
@@ -82,6 +82,7 @@ sqlc generate
    - Stores `*database.Queries`, `platform`, and `jwtSecret` on `apiConfig` for handler access.
 - API additions:
    - `POST /api/users` creates a user from JSON body `{ "email": "...", "password": "..." }`; hashes the password with `internal/auth.HashPassword` before storing, returns `201 Created` with `{id, created_at, updated_at, email}` (never the hash).
+   - `PUT /api/users` requires a valid access token (`requireAccessToken`); the JWT's user id (not the body) determines which row is updated. Takes the same `{ "email": "...", "password": "..." }` body, re-hashes the password, and updates that user's row via SQLC `UpdateUser`. Returns `200` with the updated `userResponse` (no password), `401` for a missing/invalid token, `400` for a missing email/password.
    - `POST /api/login` checks `{ "email": "...", "password": "..." }` against the stored hash via `internal/auth.CheckPasswordHash`; any lookup/mismatch failure returns `401` with `"Incorrect email or password"`. On success returns `200` with the user fields plus an access `token` (JWT, 1 hour expiry) and a `refresh_token` (60-day expiry, persisted via SQLC `CreateRefreshToken`).
    - `POST /api/refresh` takes the refresh token from `Authorization: Bearer <token>`, looks it up via SQLC `GetUserFromRefreshToken` (fails if missing/expired/revoked), and returns `200` with a fresh `{"token": "..."}` access token.
    - `POST /api/revoke` takes the refresh token from `Authorization: Bearer <token>` and marks it revoked via SQLC `RevokeRefreshToken`; returns `204 No Content`.
@@ -108,6 +109,7 @@ Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `htt
 - **TestMiddlewareMetricsInc**: calls `middlewareMetricsInc` directly against a stub handler and checks `fileserverHits` increments correctly
 - **TestCreateUserEndpoint**: verifies `POST /api/users` hashes the password and returns 201 with `id`, `created_at`, `updated_at`, and `email` (no password/hash) in the expected JSON shape
 - **TestCreateUserEndpointMissingPassword**: missing `password` field returns 400
+- **TestUpdateUserEndpoint**: table of subtests covering `PUT /api/users` with a valid access token (200, updated email returned, no password field), missing Authorization header (401), and malformed/invalid JWT (401)
 - **TestLoginEndpoint**: table of subtests covering `POST /api/login` with correct credentials (200 + valid JWT and refresh token for the user), wrong password (401), and unknown email (401)
 - **TestRefreshEndpoint**: `POST /api/refresh` returns a new valid access token for a valid refresh token, 401 for a missing header, and 401 for an expired/revoked/unknown one
 - **TestRevokeEndpoint**: `POST /api/revoke` returns 204 and revokes the token, 401 for a missing header

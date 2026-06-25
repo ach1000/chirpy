@@ -38,6 +38,7 @@ func makeHandlerWithConfig(apiCfg *apiConfig) http.Handler {
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	mux.HandleFunc("POST /api/users", apiCfg.handlerUsersCreate)
+	mux.HandleFunc("PUT /api/users", apiCfg.handlerUsersUpdate)
 	mux.HandleFunc("POST /api/login", apiCfg.handlerLogin)
 	mux.HandleFunc("POST /api/refresh", apiCfg.handlerRefresh)
 	mux.HandleFunc("POST /api/revoke", apiCfg.handlerRevoke)
@@ -192,6 +193,55 @@ func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, r *http.Request)
 	}
 
 	respondWithJSON(w, http.StatusCreated, newUserResponse(user))
+}
+
+func (cfg *apiConfig) handlerUsersUpdate(w http.ResponseWriter, r *http.Request) {
+	if cfg.dbQueries == nil {
+		respondWithError(w, http.StatusInternalServerError, "Database not configured")
+		return
+	}
+
+	userID, ok := cfg.requireAccessToken(w, r)
+	if !ok {
+		return
+	}
+
+	type parameters struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	if err := decoder.Decode(&params); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+
+	if params.Email == "" || params.Password == "" {
+		respondWithError(w, http.StatusBadRequest, "Email and password are required")
+		return
+	}
+
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		log.Printf("Error hashing password: %s", err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't update user")
+		return
+	}
+
+	user, err := cfg.dbQueries.UpdateUser(r.Context(), database.UpdateUserParams{
+		ID:             userID,
+		Email:          params.Email,
+		HashedPassword: hashedPassword,
+	})
+	if err != nil {
+		log.Printf("Error updating user: %s", err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't update user")
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, newUserResponse(user))
 }
 
 const accessTokenExpiry = time.Hour

@@ -666,6 +666,125 @@ func TestCreateUserEndpointMissingPassword(t *testing.T) {
 	}
 }
 
+func TestUpdateUserEndpoint(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	updatedAt := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	userIDStr := "50746277-23c6-4d85-a890-564c0044c2fb"
+	userID := uuid.MustParse(userIDStr)
+	newEmail := "newemail@example.com"
+
+	jwtSecret := "test-secret"
+	validToken, err := auth.MakeJWT(userID, jwtSecret, time.Hour)
+	if err != nil {
+		t.Fatalf("failed to create test JWT: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		body         string
+		authHeader   string
+		expectedCode int
+		setupMock    func()
+		checkBody    func(t *testing.T, result map[string]any)
+	}{
+		{
+			name:         "valid update",
+			body:         `{"email":"` + newEmail + `","password":"newpassword123"}`,
+			authHeader:   "Bearer " + validToken,
+			expectedCode: http.StatusOK,
+			setupMock: func() {
+				mock.ExpectQuery(regexp.QuoteMeta("UPDATE users")).
+					WithArgs(userID, newEmail, sqlmock.AnyArg()).
+					WillReturnRows(
+						sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password"}).
+							AddRow(userIDStr, updatedAt, updatedAt, newEmail, "$argon2id$v=19$m=65536,t=1,p=24$abc$def"),
+					)
+			},
+			checkBody: func(t *testing.T, result map[string]any) {
+				if result["id"] != userIDStr {
+					t.Errorf("expected id %q, got %v", userIDStr, result["id"])
+				}
+				if result["email"] != newEmail {
+					t.Errorf("expected email %q, got %v", newEmail, result["email"])
+				}
+				if _, ok := result["password"]; ok {
+					t.Errorf("expected no password field in response, got: %v", result)
+				}
+			},
+		},
+		{
+			name:         "missing Authorization header returns 401",
+			body:         `{"email":"` + newEmail + `","password":"newpassword123"}`,
+			authHeader:   "",
+			expectedCode: http.StatusUnauthorized,
+			setupMock:    func() {},
+			checkBody: func(t *testing.T, result map[string]any) {
+				if _, ok := result["error"]; !ok {
+					t.Errorf("expected 'error' key in response, got: %v", result)
+				}
+			},
+		},
+		{
+			name:         "malformed Authorization header returns 401",
+			body:         `{"email":"` + newEmail + `","password":"newpassword123"}`,
+			authHeader:   "Bearer not-a-real-token",
+			expectedCode: http.StatusUnauthorized,
+			setupMock:    func() {},
+			checkBody: func(t *testing.T, result map[string]any) {
+				if _, ok := result["error"]; !ok {
+					t.Errorf("expected 'error' key in response, got: %v", result)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.setupMock()
+			cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
+			server := httptest.NewServer(makeHandlerWithConfig(cfg))
+			defer server.Close()
+
+			req, err := http.NewRequest(http.MethodPut, server.URL+"/api/users", bytes.NewBufferString(tc.body))
+			if err != nil {
+				t.Fatalf("failed to build request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if tc.authHeader != "" {
+				req.Header.Set("Authorization", tc.authHeader)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("failed to make request: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tc.expectedCode {
+				t.Errorf("expected status %d, got %d", tc.expectedCode, resp.StatusCode)
+			}
+
+			var result map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				t.Fatalf("failed to decode response body: %v", err)
+			}
+
+			if tc.checkBody != nil {
+				tc.checkBody(t, result)
+			}
+		})
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
 func TestLoginEndpoint(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
