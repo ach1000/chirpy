@@ -408,6 +408,57 @@ func TestGetChirpsEndpoint(t *testing.T) {
 		}
 	})
 
+	t.Run("filters by author_id at the database level", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, body, user_id\nFROM chirps\nWHERE user_id = $1")).
+			WithArgs(uuid.MustParse(userIDStr)).
+			WillReturnRows(
+				sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}).
+					AddRow(chirpID1, t1, t1, "First chirp", userIDStr),
+			)
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		resp, err := http.Get(server.URL + "/api/chirps?author_id=" + userIDStr)
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected status 200, got %d", resp.StatusCode)
+		}
+
+		var result []map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if len(result) != 1 {
+			t.Fatalf("expected 1 chirp, got %d", len(result))
+		}
+		if result[0]["id"] != chirpID1 {
+			t.Errorf("expected chirp id %q, got %v", chirpID1, result[0]["id"])
+		}
+	})
+
+	t.Run("returns 400 for an invalid author_id", func(t *testing.T) {
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		resp, err := http.Get(server.URL + "/api/chirps?author_id=not-a-uuid")
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("expected status 400, got %d", resp.StatusCode)
+		}
+	})
+
 	t.Run("returns empty array when no chirps", func(t *testing.T) {
 		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, body, user_id")).
 			WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}))
