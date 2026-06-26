@@ -493,6 +493,22 @@ func TestGetChirpsEndpoint(t *testing.T) {
 		}
 	})
 
+	t.Run("returns 400 for an invalid sort value", func(t *testing.T) {
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		resp, err := http.Get(server.URL + "/api/chirps?sort=dsc")
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("expected status 400, got %d", resp.StatusCode)
+		}
+	})
+
 	t.Run("returns empty array when no chirps", func(t *testing.T) {
 		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, body, user_id")).
 			WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}))
@@ -928,6 +944,22 @@ func TestUpdateUserEndpoint(t *testing.T) {
 				}
 				if _, ok := result["password"]; ok {
 					t.Errorf("expected no password field in response, got: %v", result)
+				}
+			},
+		},
+		{
+			name:         "user no longer exists returns 404",
+			body:         `{"email":"` + newEmail + `","password":"newpassword123"}`,
+			authHeader:   "Bearer " + validToken,
+			expectedCode: http.StatusNotFound,
+			setupMock: func() {
+				mock.ExpectQuery(regexp.QuoteMeta("UPDATE users")).
+					WithArgs(userID, newEmail, sqlmock.AnyArg()).
+					WillReturnError(sql.ErrNoRows)
+			},
+			checkBody: func(t *testing.T, result map[string]any) {
+				if _, ok := result["error"]; !ok {
+					t.Errorf("expected 'error' key in response, got: %v", result)
 				}
 			},
 		},

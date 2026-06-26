@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -255,6 +256,11 @@ func (cfg *apiConfig) handlerUsersUpdate(w http.ResponseWriter, r *http.Request)
 		HashedPassword: hashedPassword,
 	})
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, http.StatusNotFound, "User not found")
+			return
+		}
+
 		log.Printf("Error updating user: %s", err)
 		respondWithError(w, http.StatusInternalServerError, "Couldn't update user")
 		return
@@ -476,6 +482,12 @@ func (cfg *apiConfig) handlerChirpsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sortOrder := r.URL.Query().Get("sort")
+	if sortOrder != "" && sortOrder != "asc" && sortOrder != "desc" {
+		respondWithError(w, http.StatusBadRequest, "Invalid sort")
+		return
+	}
+
 	var chirps []database.Chirp
 	var err error
 	if authorIDStr := r.URL.Query().Get("author_id"); authorIDStr != "" {
@@ -494,7 +506,7 @@ func (cfg *apiConfig) handlerChirpsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.URL.Query().Get("sort") == "desc" {
+	if sortOrder == "desc" {
 		sort.Slice(chirps, func(i, j int) bool {
 			return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
 		})
@@ -587,7 +599,7 @@ func (cfg *apiConfig) handlerPolkaWebhooks(w http.ResponseWriter, r *http.Reques
 	}
 
 	apiKey, err := auth.GetAPIKey(r.Header)
-	if err != nil || apiKey != cfg.polkaKey {
+	if err != nil || subtle.ConstantTimeCompare([]byte(apiKey), []byte(cfg.polkaKey)) != 1 {
 		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
