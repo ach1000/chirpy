@@ -408,6 +408,40 @@ func TestGetChirpsEndpoint(t *testing.T) {
 		}
 	})
 
+	t.Run("returns chirps in descending order when sort=desc", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, body, user_id")).
+			WillReturnRows(
+				sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}).
+					AddRow(chirpID1, t1, t1, "First chirp", userIDStr).
+					AddRow(chirpID2, t2, t2, "Second chirp", userIDStr),
+			)
+
+		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+		server := httptest.NewServer(makeHandlerWithConfig(cfg))
+		defer server.Close()
+
+		resp, err := http.Get(server.URL + "/api/chirps?sort=desc")
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var result []map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if len(result) != 2 {
+			t.Fatalf("expected 2 chirps, got %d", len(result))
+		}
+		if result[0]["id"] != chirpID2 {
+			t.Errorf("expected first chirp id %q, got %v", chirpID2, result[0]["id"])
+		}
+		if result[1]["id"] != chirpID1 {
+			t.Errorf("expected second chirp id %q, got %v", chirpID1, result[1]["id"])
+		}
+	})
+
 	t.Run("filters by author_id at the database level", func(t *testing.T) {
 		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, body, user_id\nFROM chirps\nWHERE user_id = $1")).
 			WithArgs(uuid.MustParse(userIDStr)).
