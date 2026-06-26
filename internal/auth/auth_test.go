@@ -122,6 +122,35 @@ func TestGetBearerTokenMalformedHeader(t *testing.T) {
 	}
 }
 
+func TestGetAPIKey(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Authorization", "ApiKey f271c81ff7084ee5b99a5091b42d486e")
+
+	key, err := GetAPIKey(headers)
+	if err != nil {
+		t.Fatalf("GetAPIKey failed: %v", err)
+	}
+
+	if key != "f271c81ff7084ee5b99a5091b42d486e" {
+		t.Fatalf("expected key %q, got %q", "f271c81ff7084ee5b99a5091b42d486e", key)
+	}
+}
+
+func TestGetAPIKeyMissingHeader(t *testing.T) {
+	if _, err := GetAPIKey(http.Header{}); err == nil {
+		t.Fatalf("expected an error when the Authorization header is missing")
+	}
+}
+
+func TestGetAPIKeyMalformedHeader(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer abc.def.ghi")
+
+	if _, err := GetAPIKey(headers); err == nil {
+		t.Fatalf("expected an error for a header missing the ApiKey prefix")
+	}
+}
+
 func TestMakeRefreshToken(t *testing.T) {
 	token := MakeRefreshToken()
 

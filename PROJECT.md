@@ -12,7 +12,7 @@ This is a simple Go HTTP fileserver that binds to port 8080 and serves static fi
 - `POST /admin/reset`: resets the hit count; restricted to `PLATFORM=dev` (`403` otherwise), and in `dev` also deletes all users via SQLC `DeleteUsers`
 - `POST /api/users`, `PUT /api/users`, `POST /api/login`, `POST /api/refresh`, `POST /api/revoke`: see API additions under SQLC and DB Wiring
 - `POST /api/chirps`, `GET /api/chirps`, `GET /api/chirps/{chirpID}`, `DELETE /api/chirps/{chirpID}`: chirp CRUD; create requires a valid `Authorization: Bearer <JWT>` (the user id comes from the token, not the body), validates body length (140 chars max), cleans profanity, and saves via SQLC `CreateChirp`. Delete requires a valid access token, looks up the chirp via `GetChirp`, returns `404` if missing, `403` if the token's user id doesn't match the chirp's `user_id`, otherwise deletes via SQLC `DeleteChirp` and returns `204`
-- `POST /api/polka/webhooks`: unauthenticated webhook from the "Polka" payment provider. Body is `{"event": "...", "data": {"user_id": "..."}}`; any event other than `user.upgraded` is ignored with an immediate `204`. For `user.upgraded`, upgrades the user via SQLC `UpgradeUserToChirpyRed`, returning `404` if the user id doesn't exist or `204` on success
+- `POST /api/polka/webhooks`: webhook from the "Polka" payment provider, authenticated via `Authorization: ApiKey <key>` checked against `apiConfig.polkaKey` (`401` if missing/wrong — checked before parsing the body). Body is `{"event": "...", "data": {"user_id": "..."}}`; any event other than `user.upgraded` is ignored with an immediate `204`. For `user.upgraded`, upgrades the user via SQLC `UpgradeUserToChirpyRed`, returning `404` if the user id doesn't exist or `204` on success
 
 `respondWithJSON`/`respondWithError` centralize JSON response handling. `userResponse`/`chirpResponse` (built via `newUserResponse`/`newChirpResponse`) are the shared resource shapes returned by the user and chirp handlers.
 
@@ -76,12 +76,13 @@ sqlc generate
    - `.env` is used locally and ignored by git.
    - `DB_URL` includes `?sslmode=disable` for local Postgres.
    - `JWT_SECRET` signs/verifies JWTs (generate with `openssl rand -base64 64`); server fails fast at startup if unset.
+   - `POLKA_KEY` is the shared secret Polka sends as `Authorization: ApiKey <key>` on webhook calls; server fails fast at startup if unset.
 - Server DB setup in `chirpy.go`:
    - Loads `.env` with `godotenv.Load()`.
    - Reads `DB_URL`, `PLATFORM`, `JWT_SECRET` from environment.
    - Opens Postgres with `sql.Open("postgres", dbURL)`.
    - Creates SQLC queries via `database.New(db)`.
-   - Stores `*database.Queries`, `platform`, and `jwtSecret` on `apiConfig` for handler access.
+   - Stores `*database.Queries`, `platform`, `jwtSecret`, and `polkaKey` on `apiConfig` for handler access.
 - API additions:
    - `POST /api/users` creates a user from JSON body `{ "email": "...", "password": "..." }`; hashes the password with `internal/auth.HashPassword` before storing, returns `201 Created` with `{id, created_at, updated_at, email}` (never the hash).
    - `PUT /api/users` requires a valid access token (`requireAccessToken`); the JWT's user id (not the body) determines which row is updated. Takes the same `{ "email": "...", "password": "..." }` body, re-hashes the password, and updates that user's row via SQLC `UpdateUser`. Returns `200` with the updated `userResponse` (no password), `401` for a missing/invalid token, `400` for a missing email/password.
@@ -93,6 +94,7 @@ sqlc generate
    - Password hashing via `github.com/alexedwards/argon2id`: `HashPassword`, `CheckPasswordHash`.
    - JWTs via `github.com/golang-jwt/jwt/v5`: `MakeJWT(userID, tokenSecret, expiresIn)` signs an HS256 token (`Issuer: "chirpy-access"`, `Subject` = user ID, UTC `IssuedAt`/`ExpiresAt`); `ValidateJWT(tokenString, tokenSecret)` verifies signature/expiry and returns the user ID from `Subject`.
    - `GetBearerToken(headers http.Header) (string, error)` extracts the token from `Authorization: Bearer <token>`, erroring if the header is missing or malformed.
+   - `GetAPIKey(headers http.Header) (string, error)` extracts the key from `Authorization: ApiKey <key>`, erroring if the header is missing or malformed.
    - `MakeRefreshToken() string` returns a 256-bit random value (`crypto/rand`) hex-encoded — opaque, not a JWT, validated only against the `refresh_tokens` table.
 - Required Go dependencies added:
    - `github.com/google/uuid`
@@ -117,7 +119,7 @@ Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `htt
 - **TestLoginEndpoint**: table of subtests covering `POST /api/login` with correct credentials (200 + valid JWT and refresh token for the user), wrong password (401), and unknown email (401)
 - **TestRefreshEndpoint**: `POST /api/refresh` returns a new valid access token for a valid refresh token, 401 for a missing header, and 401 for an expired/revoked/unknown one
 - **TestRevokeEndpoint**: `POST /api/revoke` returns 204 and revokes the token, 401 for a missing header
-- **TestPolkaWebhooksEndpoint**: `POST /api/polka/webhooks` returns 204 and upgrades the user on a `user.upgraded` event, 404 if the user id isn't found, and 204 immediately (no DB call) for any other event
+- **TestPolkaWebhooksEndpoint**: `POST /api/polka/webhooks` returns 204 and upgrades the user on a `user.upgraded` event, 404 if the user id isn't found, 204 immediately (no DB call) for any other event, and 401 for a missing/wrong `ApiKey`
 - **TestResetEndpointForbiddenInNonDev / TestResetEndpointDeletesUsersInDev**: verify `POST /admin/reset` returns 403 outside `dev`, and in `dev` it executes user deletion plus resets metrics
 
 `internal/auth/auth_test.go` also covers: **TestMakeJWTAndValidateJWT** (round-trip), **TestValidateJWTExpired** (negative `expiresIn` rejected), **TestValidateJWTWrongSecret** (token signed with a different secret rejected), **TestGetBearerToken** / **TestGetBearerTokenMissingHeader** / **TestGetBearerTokenMalformedHeader**, **TestMakeRefreshToken** (64-char hex, distinct per call).

@@ -1211,10 +1211,28 @@ func TestPolkaWebhooksEndpoint(t *testing.T) {
 
 	createdAt := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
 	userID := "3311741c-680c-4546-99f3-fc9efac2036c"
+	polkaKey := "f271c81ff7084ee5b99a5091b42d486e"
 
-	cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+	cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", polkaKey: polkaKey}
 	server := httptest.NewServer(makeHandlerWithConfig(cfg))
 	defer server.Close()
+
+	postWebhook := func(t *testing.T, body, authHeader string) *http.Response {
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/polka/webhooks", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatalf("failed to build request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if authHeader != "" {
+			req.Header.Set("Authorization", authHeader)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		return resp
+	}
 
 	t.Run("returns 204 and upgrades the user for a user.upgraded event", func(t *testing.T) {
 		mock.ExpectQuery(regexp.QuoteMeta("UPDATE users")).
@@ -1225,10 +1243,7 @@ func TestPolkaWebhooksEndpoint(t *testing.T) {
 			)
 
 		body := `{"event":"user.upgraded","data":{"user_id":"` + userID + `"}}`
-		resp, err := http.Post(server.URL+"/api/polka/webhooks", "application/json", bytes.NewBufferString(body))
-		if err != nil {
-			t.Fatalf("failed to make request: %v", err)
-		}
+		resp := postWebhook(t, body, "ApiKey "+polkaKey)
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusNoContent {
@@ -1242,10 +1257,7 @@ func TestPolkaWebhooksEndpoint(t *testing.T) {
 			WillReturnError(sql.ErrNoRows)
 
 		body := `{"event":"user.upgraded","data":{"user_id":"` + userID + `"}}`
-		resp, err := http.Post(server.URL+"/api/polka/webhooks", "application/json", bytes.NewBufferString(body))
-		if err != nil {
-			t.Fatalf("failed to make request: %v", err)
-		}
+		resp := postWebhook(t, body, "ApiKey "+polkaKey)
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusNotFound {
@@ -1255,14 +1267,31 @@ func TestPolkaWebhooksEndpoint(t *testing.T) {
 
 	t.Run("returns 204 immediately for other events", func(t *testing.T) {
 		body := `{"event":"user.deleted","data":{"user_id":"` + userID + `"}}`
-		resp, err := http.Post(server.URL+"/api/polka/webhooks", "application/json", bytes.NewBufferString(body))
-		if err != nil {
-			t.Fatalf("failed to make request: %v", err)
-		}
+		resp := postWebhook(t, body, "ApiKey "+polkaKey)
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusNoContent {
 			t.Fatalf("expected status 204, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("returns 401 for a missing Authorization header", func(t *testing.T) {
+		body := `{"event":"user.upgraded","data":{"user_id":"` + userID + `"}}`
+		resp := postWebhook(t, body, "")
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected status 401, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("returns 401 for the wrong API key", func(t *testing.T) {
+		body := `{"event":"user.upgraded","data":{"user_id":"` + userID + `"}}`
+		resp := postWebhook(t, body, "ApiKey wrong-key")
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected status 401, got %d", resp.StatusCode)
 		}
 	})
 

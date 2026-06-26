@@ -61,6 +61,19 @@ func GetBearerToken(headers http.Header) (string, error) {
 	return strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer ")), nil
 }
 
+func GetAPIKey(headers http.Header) (string, error) {
+	authHeader := headers.Get("Authorization")
+	if authHeader == "" {
+		return "", errors.New("no Authorization header included in request")
+	}
+
+	if !strings.HasPrefix(authHeader, "ApiKey ") {
+		return "", errors.New("malformed Authorization header")
+	}
+
+	return strings.TrimSpace(strings.TrimPrefix(authHeader, "ApiKey ")), nil
+}
+
 // No error return per the spec; rand.Read failing means the OS entropy
 // source is broken, which we treat as unrecoverable rather than plumbing
 // an error through every caller.
