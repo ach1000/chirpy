@@ -121,6 +121,17 @@ func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
 </html>`, cfg.fileserverHits.Load())
 }
 
+// requireDB writes a 500 response and returns false if no database is
+// configured (e.g. an apiConfig built without one in a test or dev shell).
+func (cfg *apiConfig) requireDB(w http.ResponseWriter) bool {
+	if cfg.dbQueries == nil {
+		respondWithError(w, http.StatusInternalServerError, "Database not configured")
+		return false
+	}
+
+	return true
+}
+
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	if cfg.platform != "dev" {
 		respondWithError(w, http.StatusForbidden, "Reset is only allowed in dev environment")
@@ -163,26 +174,36 @@ func newUserResponse(user database.User) userResponse {
 	}
 }
 
-func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, r *http.Request) {
-	if cfg.dbQueries == nil {
-		respondWithError(w, http.StatusInternalServerError, "Database not configured")
-		return
-	}
+type credentialsParams struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
 
-	type parameters struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
-
+// decodeCredentialsOrRespond decodes an {email, password} JSON body, writing
+// a 500/400 response and returning ok=false if decoding fails or either
+// field is missing.
+func decodeCredentialsOrRespond(w http.ResponseWriter, r *http.Request) (params credentialsParams, ok bool) {
 	decoder := json.NewDecoder(r.Body)
-	params := parameters{}
 	if err := decoder.Decode(&params); err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
-		return
+		return credentialsParams{}, false
 	}
 
 	if params.Email == "" || params.Password == "" {
 		respondWithError(w, http.StatusBadRequest, "Email and password are required")
+		return credentialsParams{}, false
+	}
+
+	return params, true
+}
+
+func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, r *http.Request) {
+	if !cfg.requireDB(w) {
+		return
+	}
+
+	params, ok := decodeCredentialsOrRespond(w, r)
+	if !ok {
 		return
 	}
 
@@ -207,8 +228,7 @@ func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, r *http.Request)
 }
 
 func (cfg *apiConfig) handlerUsersUpdate(w http.ResponseWriter, r *http.Request) {
-	if cfg.dbQueries == nil {
-		respondWithError(w, http.StatusInternalServerError, "Database not configured")
+	if !cfg.requireDB(w) {
 		return
 	}
 
@@ -217,20 +237,8 @@ func (cfg *apiConfig) handlerUsersUpdate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	type parameters struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
-
-	decoder := json.NewDecoder(r.Body)
-	params := parameters{}
-	if err := decoder.Decode(&params); err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
-		return
-	}
-
-	if params.Email == "" || params.Password == "" {
-		respondWithError(w, http.StatusBadRequest, "Email and password are required")
+	params, ok := decodeCredentialsOrRespond(w, r)
+	if !ok {
 		return
 	}
 
@@ -259,8 +267,7 @@ const accessTokenExpiry = time.Hour
 const refreshTokenExpiry = 60 * 24 * time.Hour
 
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
-	if cfg.dbQueries == nil {
-		respondWithError(w, http.StatusInternalServerError, "Database not configured")
+	if !cfg.requireDB(w) {
 		return
 	}
 
@@ -342,8 +349,7 @@ func (cfg *apiConfig) requireAccessToken(w http.ResponseWriter, r *http.Request)
 }
 
 func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
-	if cfg.dbQueries == nil {
-		respondWithError(w, http.StatusInternalServerError, "Database not configured")
+	if !cfg.requireDB(w) {
 		return
 	}
 
@@ -369,8 +375,7 @@ func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
-	if cfg.dbQueries == nil {
-		respondWithError(w, http.StatusInternalServerError, "Database not configured")
+	if !cfg.requireDB(w) {
 		return
 	}
 
@@ -427,8 +432,7 @@ func newChirpResponse(chirp database.Chirp) chirpResponse {
 }
 
 func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request) {
-	if cfg.dbQueries == nil {
-		respondWithError(w, http.StatusInternalServerError, "Database not configured")
+	if !cfg.requireDB(w) {
 		return
 	}
 
@@ -468,8 +472,7 @@ func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request
 }
 
 func (cfg *apiConfig) handlerChirpsGet(w http.ResponseWriter, r *http.Request) {
-	if cfg.dbQueries == nil {
-		respondWithError(w, http.StatusInternalServerError, "Database not configured")
+	if !cfg.requireDB(w) {
 		return
 	}
 
@@ -505,27 +508,37 @@ func (cfg *apiConfig) handlerChirpsGet(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, response)
 }
 
-func (cfg *apiConfig) handlerChirpsGetByID(w http.ResponseWriter, r *http.Request) {
-	if cfg.dbQueries == nil {
-		respondWithError(w, http.StatusInternalServerError, "Database not configured")
-		return
-	}
-
+// lookupChirpOrRespond parses the {chirpID} path value and fetches it,
+// writing a 404/500 response and returning ok=false on any failure.
+func (cfg *apiConfig) lookupChirpOrRespond(w http.ResponseWriter, r *http.Request) (chirp database.Chirp, ok bool) {
 	chirpID, err := uuid.Parse(r.PathValue("chirpID"))
 	if err != nil {
 		respondWithError(w, http.StatusNotFound, "Chirp not found")
-		return
+		return database.Chirp{}, false
 	}
 
-	chirp, err := cfg.dbQueries.GetChirp(r.Context(), chirpID)
+	chirp, err = cfg.dbQueries.GetChirp(r.Context(), chirpID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			respondWithError(w, http.StatusNotFound, "Chirp not found")
-			return
+			return database.Chirp{}, false
 		}
 
 		log.Printf("Error getting chirp by ID: %s", err)
 		respondWithError(w, http.StatusInternalServerError, "Couldn't get chirp")
+		return database.Chirp{}, false
+	}
+
+	return chirp, true
+}
+
+func (cfg *apiConfig) handlerChirpsGetByID(w http.ResponseWriter, r *http.Request) {
+	if !cfg.requireDB(w) {
+		return
+	}
+
+	chirp, ok := cfg.lookupChirpOrRespond(w, r)
+	if !ok {
 		return
 	}
 
@@ -533,8 +546,7 @@ func (cfg *apiConfig) handlerChirpsGetByID(w http.ResponseWriter, r *http.Reques
 }
 
 func (cfg *apiConfig) handlerChirpsDelete(w http.ResponseWriter, r *http.Request) {
-	if cfg.dbQueries == nil {
-		respondWithError(w, http.StatusInternalServerError, "Database not configured")
+	if !cfg.requireDB(w) {
 		return
 	}
 
@@ -543,21 +555,8 @@ func (cfg *apiConfig) handlerChirpsDelete(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	chirpID, err := uuid.Parse(r.PathValue("chirpID"))
-	if err != nil {
-		respondWithError(w, http.StatusNotFound, "Chirp not found")
-		return
-	}
-
-	chirp, err := cfg.dbQueries.GetChirp(r.Context(), chirpID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			respondWithError(w, http.StatusNotFound, "Chirp not found")
-			return
-		}
-
-		log.Printf("Error getting chirp by ID: %s", err)
-		respondWithError(w, http.StatusInternalServerError, "Couldn't get chirp")
+	chirp, ok := cfg.lookupChirpOrRespond(w, r)
+	if !ok {
 		return
 	}
 
@@ -566,7 +565,7 @@ func (cfg *apiConfig) handlerChirpsDelete(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := cfg.dbQueries.DeleteChirp(r.Context(), chirpID); err != nil {
+	if err := cfg.dbQueries.DeleteChirp(r.Context(), chirp.ID); err != nil {
 		log.Printf("Error deleting chirp: %s", err)
 		respondWithError(w, http.StatusInternalServerError, "Couldn't delete chirp")
 		return
@@ -576,8 +575,7 @@ func (cfg *apiConfig) handlerChirpsDelete(w http.ResponseWriter, r *http.Request
 }
 
 func (cfg *apiConfig) handlerPolkaWebhooks(w http.ResponseWriter, r *http.Request) {
-	if cfg.dbQueries == nil {
-		respondWithError(w, http.StatusInternalServerError, "Database not configured")
+	if !cfg.requireDB(w) {
 		return
 	}
 

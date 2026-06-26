@@ -49,29 +49,24 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 }
 
 func GetBearerToken(headers http.Header) (string, error) {
-	authHeader := headers.Get("Authorization")
-	if authHeader == "" {
-		return "", errors.New("no Authorization header included in request")
-	}
-
-	if !strings.HasPrefix(authHeader, "Bearer ") {
-		return "", errors.New("malformed Authorization header")
-	}
-
-	return strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer ")), nil
+	return extractAuthHeader(headers, "Bearer ")
 }
 
 func GetAPIKey(headers http.Header) (string, error) {
+	return extractAuthHeader(headers, "ApiKey ")
+}
+
+func extractAuthHeader(headers http.Header, prefix string) (string, error) {
 	authHeader := headers.Get("Authorization")
 	if authHeader == "" {
 		return "", errors.New("no Authorization header included in request")
 	}
 
-	if !strings.HasPrefix(authHeader, "ApiKey ") {
+	if !strings.HasPrefix(authHeader, prefix) {
 		return "", errors.New("malformed Authorization header")
 	}
 
-	return strings.TrimSpace(strings.TrimPrefix(authHeader, "ApiKey ")), nil
+	return strings.TrimSpace(strings.TrimPrefix(authHeader, prefix)), nil
 }
 
 // No error return per the spec; rand.Read failing means the OS entropy
