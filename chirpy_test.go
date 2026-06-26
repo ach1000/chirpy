@@ -707,8 +707,8 @@ func TestCreateUserEndpoint(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO users (id, created_at, updated_at, email, hashed_password)")).
 		WithArgs(email, sqlmock.AnyArg()).
 		WillReturnRows(
-			sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password"}).
-				AddRow(userID, createdAt, createdAt, email, "$argon2id$v=19$m=65536,t=1,p=24$abc$def"),
+			sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password", "is_chirpy_red"}).
+				AddRow(userID, createdAt, createdAt, email, "$argon2id$v=19$m=65536,t=1,p=24$abc$def", false),
 		)
 
 	cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
@@ -840,8 +840,8 @@ func TestUpdateUserEndpoint(t *testing.T) {
 				mock.ExpectQuery(regexp.QuoteMeta("UPDATE users")).
 					WithArgs(userID, newEmail, sqlmock.AnyArg()).
 					WillReturnRows(
-						sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password"}).
-							AddRow(userIDStr, updatedAt, updatedAt, newEmail, "$argon2id$v=19$m=65536,t=1,p=24$abc$def"),
+						sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password", "is_chirpy_red"}).
+							AddRow(userIDStr, updatedAt, updatedAt, newEmail, "$argon2id$v=19$m=65536,t=1,p=24$abc$def", false),
 					)
 			},
 			checkBody: func(t *testing.T, result map[string]any) {
@@ -944,8 +944,8 @@ func TestLoginEndpoint(t *testing.T) {
 	jwtSecret := "test-secret"
 
 	makeUserRows := func() *sqlmock.Rows {
-		return sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password"}).
-			AddRow(userID, createdAt, createdAt, email, hash)
+		return sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password", "is_chirpy_red"}).
+			AddRow(userID, createdAt, createdAt, email, hash, false)
 	}
 
 	t.Run("returns 200 with a valid access token and refresh token for correct credentials", func(t *testing.T) {
@@ -1062,8 +1062,8 @@ func TestRefreshEndpoint(t *testing.T) {
 		mock.ExpectQuery(regexp.QuoteMeta("SELECT users.id, users.created_at, users.updated_at, users.email, users.hashed_password")).
 			WithArgs("valid-refresh-token").
 			WillReturnRows(
-				sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password"}).
-					AddRow(userID, createdAt, createdAt, email, "hash"),
+				sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password", "is_chirpy_red"}).
+					AddRow(userID, createdAt, createdAt, email, "hash", false),
 			)
 
 		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
@@ -1194,6 +1194,75 @@ func TestRevokeEndpoint(t *testing.T) {
 
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("expected status 401, got %d", resp.StatusCode)
+		}
+	})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+func TestPolkaWebhooksEndpoint(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	createdAt := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	userID := "3311741c-680c-4546-99f3-fc9efac2036c"
+
+	cfg := &apiConfig{dbQueries: database.New(db), platform: "dev"}
+	server := httptest.NewServer(makeHandlerWithConfig(cfg))
+	defer server.Close()
+
+	t.Run("returns 204 and upgrades the user for a user.upgraded event", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("UPDATE users")).
+			WithArgs(uuid.MustParse(userID)).
+			WillReturnRows(
+				sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password", "is_chirpy_red"}).
+					AddRow(userID, createdAt, createdAt, "user@example.com", "hash", true),
+			)
+
+		body := `{"event":"user.upgraded","data":{"user_id":"` + userID + `"}}`
+		resp, err := http.Post(server.URL+"/api/polka/webhooks", "application/json", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("expected status 204, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("returns 404 if the user is not found", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("UPDATE users")).
+			WithArgs(uuid.MustParse(userID)).
+			WillReturnError(sql.ErrNoRows)
+
+		body := `{"event":"user.upgraded","data":{"user_id":"` + userID + `"}}`
+		resp, err := http.Post(server.URL+"/api/polka/webhooks", "application/json", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected status 404, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("returns 204 immediately for other events", func(t *testing.T) {
+		body := `{"event":"user.deleted","data":{"user_id":"` + userID + `"}}`
+		resp, err := http.Post(server.URL+"/api/polka/webhooks", "application/json", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatalf("failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("expected status 204, got %d", resp.StatusCode)
 		}
 	})
 

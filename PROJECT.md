@@ -12,6 +12,7 @@ This is a simple Go HTTP fileserver that binds to port 8080 and serves static fi
 - `POST /admin/reset`: resets the hit count; restricted to `PLATFORM=dev` (`403` otherwise), and in `dev` also deletes all users via SQLC `DeleteUsers`
 - `POST /api/users`, `PUT /api/users`, `POST /api/login`, `POST /api/refresh`, `POST /api/revoke`: see API additions under SQLC and DB Wiring
 - `POST /api/chirps`, `GET /api/chirps`, `GET /api/chirps/{chirpID}`, `DELETE /api/chirps/{chirpID}`: chirp CRUD; create requires a valid `Authorization: Bearer <JWT>` (the user id comes from the token, not the body), validates body length (140 chars max), cleans profanity, and saves via SQLC `CreateChirp`. Delete requires a valid access token, looks up the chirp via `GetChirp`, returns `404` if missing, `403` if the token's user id doesn't match the chirp's `user_id`, otherwise deletes via SQLC `DeleteChirp` and returns `204`
+- `POST /api/polka/webhooks`: unauthenticated webhook from the "Polka" payment provider. Body is `{"event": "...", "data": {"user_id": "..."}}`; any event other than `user.upgraded` is ignored with an immediate `204`. For `user.upgraded`, upgrades the user via SQLC `UpgradeUserToChirpyRed`, returning `404` if the user id doesn't exist or `204` on success
 
 `respondWithJSON`/`respondWithError` centralize JSON response handling. `userResponse`/`chirpResponse` (built via `newUserResponse`/`newChirpResponse`) are the shared resource shapes returned by the user and chirp handlers.
 
@@ -52,7 +53,8 @@ go install github.com/pressly/goose/v3/cmd/goose@latest
 - SQLC reads schema from `sql/schema` and queries from `sql/queries`.
 - SQLC generated Go package output: `internal/database`.
 - Current query file: `sql/queries/users.sql` with `CreateUser` insert query.
-- `sql/queries/users.sql` also includes `DeleteUsers` for admin reset behavior, `GetUserByEmail` for login lookups, and `UpdateUser` (sets `email`/`hashed_password`/`updated_at` by `id`) for the self-service update endpoint.
+- `sql/queries/users.sql` also includes `DeleteUsers` for admin reset behavior, `GetUserByEmail` for login lookups, `UpdateUser` (sets `email`/`hashed_password`/`updated_at` by `id`) for the self-service update endpoint, and `UpgradeUserToChirpyRed` (sets `is_chirpy_red = true`/`updated_at` by `id`) for the Polka webhook.
+- `users` table has an `is_chirpy_red BOOLEAN NOT NULL DEFAULT false` column (migration `005_users_chirpy_red.sql`), included in every `userResponse` (`newUserResponse`).
 - `sql/queries/chirps.sql` has `CreateChirp` (INSERT with body and user_id params), `GetChirps`, `GetChirp` (by id), and `DeleteChirp` (by id) queries.
 - `users` table has a non-null `hashed_password TEXT` column (default `'unset'`, added in migration `003_users_hashed_password.sql`).
 - `refresh_tokens` table (migration `004_refresh_tokens.sql`): `token` (PK, text), `created_at`, `updated_at`, `user_id` (FK → `users.id` ON DELETE CASCADE), `expires_at`, nullable `revoked_at`. Queries in `sql/queries/refresh_tokens.sql`: `CreateRefreshToken`, `GetUserFromRefreshToken` (join filtering out expired/revoked rows), `RevokeRefreshToken` (sets `revoked_at`/`updated_at` to now).
@@ -86,6 +88,7 @@ sqlc generate
    - `POST /api/login` checks `{ "email": "...", "password": "..." }` against the stored hash via `internal/auth.CheckPasswordHash`; any lookup/mismatch failure returns `401` with `"Incorrect email or password"`. On success returns `200` with the user fields plus an access `token` (JWT, 1 hour expiry) and a `refresh_token` (60-day expiry, persisted via SQLC `CreateRefreshToken`).
    - `POST /api/refresh` takes the refresh token from `Authorization: Bearer <token>`, looks it up via SQLC `GetUserFromRefreshToken` (fails if missing/expired/revoked), and returns `200` with a fresh `{"token": "..."}` access token.
    - `POST /api/revoke` takes the refresh token from `Authorization: Bearer <token>` and marks it revoked via SQLC `RevokeRefreshToken`; returns `204 No Content`.
+   - `POST /api/polka/webhooks` — see Architecture above.
 - `internal/auth` package (tested in `internal/auth/auth_test.go`):
    - Password hashing via `github.com/alexedwards/argon2id`: `HashPassword`, `CheckPasswordHash`.
    - JWTs via `github.com/golang-jwt/jwt/v5`: `MakeJWT(userID, tokenSecret, expiresIn)` signs an HS256 token (`Issuer: "chirpy-access"`, `Subject` = user ID, UTC `IssuedAt`/`ExpiresAt`); `ValidateJWT(tokenString, tokenSecret)` verifies signature/expiry and returns the user ID from `Subject`.
@@ -114,6 +117,7 @@ Automated tests live in `chirpy_test.go`, run via `go test ./...`. They use `htt
 - **TestLoginEndpoint**: table of subtests covering `POST /api/login` with correct credentials (200 + valid JWT and refresh token for the user), wrong password (401), and unknown email (401)
 - **TestRefreshEndpoint**: `POST /api/refresh` returns a new valid access token for a valid refresh token, 401 for a missing header, and 401 for an expired/revoked/unknown one
 - **TestRevokeEndpoint**: `POST /api/revoke` returns 204 and revokes the token, 401 for a missing header
+- **TestPolkaWebhooksEndpoint**: `POST /api/polka/webhooks` returns 204 and upgrades the user on a `user.upgraded` event, 404 if the user id isn't found, and 204 immediately (no DB call) for any other event
 - **TestResetEndpointForbiddenInNonDev / TestResetEndpointDeletesUsersInDev**: verify `POST /admin/reset` returns 403 outside `dev`, and in `dev` it executes user deletion plus resets metrics
 
 `internal/auth/auth_test.go` also covers: **TestMakeJWTAndValidateJWT** (round-trip), **TestValidateJWTExpired** (negative `expiresIn` rejected), **TestValidateJWTWrongSecret** (token signed with a different secret rejected), **TestGetBearerToken** / **TestGetBearerTokenMissingHeader** / **TestGetBearerTokenMalformedHeader**, **TestMakeRefreshToken** (64-char hex, distinct per call).
@@ -134,6 +138,7 @@ Endpoint behavior matches the Architecture section above; `/admin/metrics` is me
 - **Auth Helpers**: `apiConfig.requireBearerToken` (extract `Authorization: Bearer <token>` or write 401) and `apiConfig.requireAccessToken` (also validates it as a JWT) centralize the bearer-token check used by `handlerChirpsCreate`, `handlerRefresh`, and `handlerRevoke` instead of repeating it per handler
 - **Idempotent Revoke**: `POST /api/revoke` always returns `204`, even for an unknown/already-revoked token (`RevokeRefreshToken` is a plain `:exec` that doesn't check rows-affected). Intentional: it avoids letting a caller probe token validity via the response, and checking existence first would add a TOCTOU race against concurrent revokes without a transaction
 - **No Issuer Check in ValidateJWT**: `ValidateJWT` (`internal/auth/auth.go`) only checks signature and expiry, not `claims.Issuer` against the `tokenIssuer` constant. Intentional for now: there's only one JWT type/secret in the system, so there's nothing to distinguish it from; revisit if a second JWT-based token type is ever introduced
+- **No Idempotency Key on Polka Webhook**: `POST /api/polka/webhooks` doesn't dedupe by an event/delivery ID even though webhooks are conventionally idempotent. Acceptable here because the underlying operation (`SET is_chirpy_red = true`) is itself naturally idempotent — replays from Polka's retry-on-non-2xx behavior have no harmful effect
 
 ## Project Structure
 ```
@@ -143,7 +148,8 @@ chirpy/
 │       ├── 001_users.sql                    # Goose migration: create/drop users table
 │       ├── 002_chirps.sql                   # Goose migration: create/drop chirps table (FK -> users ON DELETE CASCADE)
 │       ├── 003_users_hashed_password.sql    # Goose migration: add non-null hashed_password column (default 'unset')
-│       └── 004_refresh_tokens.sql           # Goose migration: create/drop refresh_tokens table (FK -> users ON DELETE CASCADE)
+│       ├── 004_refresh_tokens.sql           # Goose migration: create/drop refresh_tokens table (FK -> users ON DELETE CASCADE)
+│       └── 005_users_chirpy_red.sql         # Goose migration: add non-null is_chirpy_red boolean column (default false)
 ├── internal/
 │   └── auth/        # Password hashing (argon2id) and JWT helpers, see SQLC and DB Wiring above
 ├── chirpy.go        # Server implementation (main, makeHandler, handlerReadiness, apiConfig handlers)

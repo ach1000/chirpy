@@ -46,6 +46,7 @@ func makeHandlerWithConfig(apiCfg *apiConfig) http.Handler {
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlerChirpsGet)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerChirpsGetByID)
 	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.handlerChirpsDelete)
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.handlerPolkaWebhooks)
 
 	return mux
 }
@@ -140,16 +141,18 @@ type userResponse struct {
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
 	Email        string `json:"email"`
+	IsChirpyRed  bool   `json:"is_chirpy_red"`
 	Token        string `json:"token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
 func newUserResponse(user database.User) userResponse {
 	return userResponse{
-		ID:        user.ID.String(),
-		CreatedAt: user.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt: user.UpdatedAt.UTC().Format(time.RFC3339),
-		Email:     user.Email,
+		ID:          user.ID.String(),
+		CreatedAt:   user.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:   user.UpdatedAt.UTC().Format(time.RFC3339),
+		Email:       user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 }
 
@@ -542,6 +545,45 @@ func (cfg *apiConfig) handlerChirpsDelete(w http.ResponseWriter, r *http.Request
 	if err := cfg.dbQueries.DeleteChirp(r.Context(), chirpID); err != nil {
 		log.Printf("Error deleting chirp: %s", err)
 		respondWithError(w, http.StatusInternalServerError, "Couldn't delete chirp")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (cfg *apiConfig) handlerPolkaWebhooks(w http.ResponseWriter, r *http.Request) {
+	if cfg.dbQueries == nil {
+		respondWithError(w, http.StatusInternalServerError, "Database not configured")
+		return
+	}
+
+	type parameters struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID uuid.UUID `json:"user_id"`
+		} `json:"data"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	if err := decoder.Decode(&params); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+
+	if params.Event != "user.upgraded" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if _, err := cfg.dbQueries.UpgradeUserToChirpyRed(r.Context(), params.Data.UserID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, http.StatusNotFound, "User not found")
+			return
+		}
+
+		log.Printf("Error upgrading user to Chirpy Red: %s", err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't upgrade user")
 		return
 	}
 
