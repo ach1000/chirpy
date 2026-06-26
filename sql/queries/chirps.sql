@@ -26,6 +26,7 @@ FROM chirps
 WHERE id = $1
 LIMIT 1;
 
--- name: DeleteChirp :exec
+-- name: DeleteChirpByOwner :one
 DELETE FROM chirps
-WHERE id = $1;
+WHERE id = $1 AND user_id = $2
+RETURNING id;

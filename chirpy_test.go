@@ -621,7 +621,6 @@ func TestDeleteChirpEndpoint(t *testing.T) {
 	}
 	defer db.Close()
 
-	createdAt := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)
 	chirpID := "94b7e44c-3604-42e3-bef7-ebfcc3efff8f"
 	ownerIDStr := "50746277-23c6-4d85-a890-564c0044c2fb"
 	otherIDStr := "f0f87ec2-a8b5-48cc-b66a-a85ce7c7b862"
@@ -640,15 +639,9 @@ func TestDeleteChirpEndpoint(t *testing.T) {
 	}
 
 	t.Run("owner can delete their chirp", func(t *testing.T) {
-		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, body, user_id")).
-			WithArgs(parsedChirpID).
-			WillReturnRows(
-				sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}).
-					AddRow(chirpID, createdAt, createdAt, "mine", ownerIDStr),
-			)
-		mock.ExpectExec(regexp.QuoteMeta("DELETE FROM chirps")).
-			WithArgs(parsedChirpID).
-			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectQuery(regexp.QuoteMeta("DELETE FROM chirps")).
+			WithArgs(parsedChirpID, ownerID).
+			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(parsedChirpID))
 
 		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
 		server := httptest.NewServer(makeHandlerWithConfig(cfg))
@@ -671,13 +664,10 @@ func TestDeleteChirpEndpoint(t *testing.T) {
 		}
 	})
 
-	t.Run("non-owner gets 403", func(t *testing.T) {
-		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, body, user_id")).
-			WithArgs(parsedChirpID).
-			WillReturnRows(
-				sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}).
-					AddRow(chirpID, createdAt, createdAt, "mine", ownerIDStr),
-			)
+	t.Run("non-owner gets 404, not 403, to avoid revealing the chirp exists", func(t *testing.T) {
+		mock.ExpectQuery(regexp.QuoteMeta("DELETE FROM chirps")).
+			WithArgs(parsedChirpID, otherID).
+			WillReturnError(sql.ErrNoRows)
 
 		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}
 		server := httptest.NewServer(makeHandlerWithConfig(cfg))
@@ -695,15 +685,15 @@ func TestDeleteChirpEndpoint(t *testing.T) {
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode != http.StatusForbidden {
-			t.Fatalf("expected status 403, got %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected status 404, got %d", resp.StatusCode)
 		}
 	})
 
 	t.Run("missing chirp returns 404", func(t *testing.T) {
 		missingID := "11111111-1111-1111-1111-111111111111"
-		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, updated_at, body, user_id")).
-			WithArgs(uuid.MustParse(missingID)).
+		mock.ExpectQuery(regexp.QuoteMeta("DELETE FROM chirps")).
+			WithArgs(uuid.MustParse(missingID), ownerID).
 			WillReturnError(sql.ErrNoRows)
 
 		cfg := &apiConfig{dbQueries: database.New(db), platform: "dev", jwtSecret: jwtSecret}

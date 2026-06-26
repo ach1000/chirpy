@@ -555,17 +555,24 @@ func (cfg *apiConfig) handlerChirpsDelete(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	chirp, ok := cfg.lookupChirpOrRespond(w, r)
-	if !ok {
+	chirpID, err := uuid.Parse(r.PathValue("chirpID"))
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "Chirp not found")
 		return
 	}
 
-	if chirp.UserID != userID {
-		respondWithError(w, http.StatusForbidden, "You can only delete your own chirps")
-		return
-	}
+	_, err = cfg.dbQueries.DeleteChirpByOwner(r.Context(), database.DeleteChirpByOwnerParams{
+		ID:     chirpID,
+		UserID: userID,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Doesn't exist or isn't owned by this user — 404 either way so a
+			// non-owner can't use the response to probe which chirp IDs exist.
+			respondWithError(w, http.StatusNotFound, "Chirp not found")
+			return
+		}
 
-	if err := cfg.dbQueries.DeleteChirp(r.Context(), chirp.ID); err != nil {
 		log.Printf("Error deleting chirp: %s", err)
 		respondWithError(w, http.StatusInternalServerError, "Couldn't delete chirp")
 		return
